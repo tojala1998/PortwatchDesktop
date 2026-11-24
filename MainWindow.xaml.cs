@@ -17,11 +17,13 @@ namespace PortwatchDesktop;
 public partial class MainWindow : Window
 {
     private JsonObject state = TrackerService.Load(TrackerService.StateFile);
-    private readonly int[] intervals = [5,10,15,30,60,120];
+    private UserSettings settings=UserSettings.Load();
+    private readonly Queue<string> fetchLog=new();
+    private DeveloperWindow? developer;
     private readonly DispatcherTimer timer = new() { Interval=TimeSpan.FromMilliseconds(250) };
     private readonly CancellationTokenSource closing = new();
     private DateTimeOffset nextScan=DateTimeOffset.UtcNow;
-    private bool initialized, busy, fullscreen, running, allowExit, trayHintShown;
+    private bool busy, fullscreen, running, allowExit, trayHintShown;
     private Forms.NotifyIcon? trayIcon;
     private Forms.ToolStripMenuItem? trayFetch, trayAuto, trayStatus;
     private Drawing.Icon? trayImage;
@@ -39,21 +41,14 @@ public partial class MainWindow : Window
         SizeChanged+=(_,_)=>UpdateDashboardLayout();
         RaceTrack.ProjectSelected+=project=>{Tabs.SelectedIndex=0;var row=Leaderboard.Items.OfType<ProjectRow>().FirstOrDefault(x=>x.Name==project.Name&&x.Repo==project.Repo);if(row is not null){Leaderboard.SelectedItem=row;Leaderboard.ScrollIntoView(row);}};
         SourceInitialized+=(_,_)=>{try{int dark=1;DwmSetWindowAttribute(new WindowInteropHelper(this).Handle,20,ref dark,sizeof(int));}catch(DllNotFoundException){}catch(EntryPointNotFoundException){}};
-        var settings=TrackerService.Load(TrackerService.SettingsFile);
-        int minutes=(int)TrackerService.Number(settings,"interval");if(!intervals.Contains(minutes))minutes=15;
-        Interval.ItemsSource=intervals.Select(n=>$"{n} min").ToArray();
-        Interval.SelectedIndex=Array.IndexOf(intervals,minutes);
-        AutoFetch.IsChecked=TrackerService.Flag(settings,"auto",true);
-        NotifyMilestones.IsChecked=TrackerService.Flag(settings,"notifications",true);
-        initialized=true;
         Render();ClockTick();
         Loaded+=(_,_)=>{if(running)return;running=true;InitializeTray();timer.Tick+=(_,_)=>ClockTick();timer.Start();};
-        Closing+=(_,e)=>{if(!allowExit&&trayIcon is not null){e.Cancel=true;HideToTray();}};
+        Closing+=(_,e)=>{if(!allowExit&&settings.CloseToTray&&trayIcon is not null){e.Cancel=true;HideToTray();}};
         Closed+=(_,_)=>{timer.Stop();closing.Cancel();DisposeTray();};
         System.Windows.Application.Current.SessionEnding+=(_,_)=>{allowExit=true;DisposeTray();};
     }
 
-    private int IntervalMinutes => Interval.SelectedIndex>=0&&Interval.SelectedIndex<intervals.Length?intervals[Interval.SelectedIndex]:15;
+    private int IntervalMinutes => settings.Interval;
 
     private void InitializeTray()
     {
@@ -65,10 +60,11 @@ public partial class MainWindow : Window
             var menu=new Forms.ContextMenuStrip();
             var show=new Forms.ToolStripMenuItem("Show dashboard");show.Click+=(_,_)=>Dispatcher.Invoke(ShowFromTray);
             trayFetch=new Forms.ToolStripMenuItem("Fetch now");trayFetch.Click+=(_,_)=>Dispatcher.Invoke(()=>_ = FetchAsync());
-            trayAuto=new Forms.ToolStripMenuItem("Auto-fetch"){Checked=AutoFetch.IsChecked==true};trayAuto.Click+=(_,_)=>Dispatcher.Invoke(()=>AutoFetch.IsChecked=AutoFetch.IsChecked!=true);
+            trayAuto=new Forms.ToolStripMenuItem("Auto-fetch"){Checked=settings.AutoFetch};trayAuto.Click+=(_,_)=>Dispatcher.Invoke(()=>ApplySettings(settings with {AutoFetch=!settings.AutoFetch}));
             trayStatus=new Forms.ToolStripMenuItem("Ready"){Enabled=false};
             var exit=new Forms.ToolStripMenuItem("Exit Portwatch");exit.Click+=(_,_)=>Dispatcher.Invoke(ExitFromTray);
-            menu.Items.AddRange([show,trayFetch,trayAuto,trayStatus,new Forms.ToolStripSeparator(),exit]);
+            var preferences=new Forms.ToolStripMenuItem("Settings");preferences.Click+=(_,_)=>Dispatcher.Invoke(()=>{ShowFromTray();OpenSettings();});
+            menu.Items.AddRange([show,trayFetch,trayAuto,trayStatus,preferences,new Forms.ToolStripSeparator(),exit]);
             trayIcon=new Forms.NotifyIcon{Icon=trayImage,Text="Portwatch Desktop",ContextMenuStrip=menu,Visible=true};
             trayIcon.DoubleClick+=(_,_)=>Dispatcher.Invoke(ShowFromTray);
             trayIcon.BalloonTipClicked+=(_,_)=>Dispatcher.Invoke(ShowFromTray);
@@ -79,6 +75,7 @@ public partial class MainWindow : Window
     private void HideToTray()
     {
         if(fullscreen)ToggleFullscreen();
+        developer?.Close();
         Hide();
         if(!trayHintShown&&trayIcon is not null)
         {
@@ -92,6 +89,7 @@ public partial class MainWindow : Window
         if(WindowState==WindowState.Minimized)WindowState=WindowState.Normal;
         Activate();
     }
+    internal void StartHidden(){if(trayIcon is not null){trayHintShown=true;HideToTray();}}
 
     private void ExitFromTray(){allowExit=true;Close();}
 
@@ -143,13 +141,24 @@ public partial class MainWindow : Window
         Render();
     }
 
-    private void SettingsChanged(object sender,RoutedEventArgs e)
+    private void ApplySettings(UserSettings updated)
     {
-        if(!initialized)return;
-        nextScan=DateTimeOffset.UtcNow.AddMinutes(IntervalMinutes);
-        try{TrackerService.Save(TrackerService.SettingsFile,new JsonObject{["interval"]=IntervalMinutes,["auto"]=AutoFetch.IsChecked==true,["notifications"]=NotifyMilestones.IsChecked==true});}catch(IOException){}
+        bool scheduleChanged=settings.AutoFetch!=updated.AutoFetch||settings.Interval!=updated.Interval;
+        settings=updated;
+        if(scheduleChanged)nextScan=DateTimeOffset.UtcNow.AddMinutes(IntervalMinutes);
+        try{settings.Save();}catch(Exception e) when(e is IOException or UnauthorizedAccessException){MessageBox.Show(this,"Could not save settings: "+e.Message,"Portwatch Desktop");}
+        Render();ClockTick();
     }
-    private void WatchlistChanged(object sender,RoutedEventArgs e){if(initialized)Render();}
+    private void SettingsButton_Click(object sender,RoutedEventArgs e){if((Keyboard.Modifiers&ModifierKeys.Shift)!=0)OpenDeveloper();else OpenSettings();}
+    private void OpenSettings(){var dialog=new SettingsWindow(this,settings);if(dialog.ShowDialog()==true&&dialog.Result is not null)ApplySettings(dialog.Result);}
+    private void OpenDeveloper()
+    {
+        if(developer is not null){developer.Activate();return;}
+        developer=new DeveloperWindow(this,fetchLog,()=>_ = FetchAsync(),()=>TestNotification(false),()=>TestNotification(true),()=>TrackerService.Report(state),()=>fetchLog.Clear());developer.Closed+=(_,_)=>developer=null;developer.Show();
+    }
+    private void Log(string message){string line=$"[{DateTime.Now:HH:mm:ss}] {message}";fetchLog.Enqueue(line);while(fetchLog.Count>500)fetchLog.Dequeue();developer?.Append(line);}
+    private void TestNotification(bool stable){ShowNotifications([new ActivityRow("","Test project","Milestone alert",stable?"TEST · PortWatch reports 100% stable gameplay (30 FPS or higher).":"TEST · PortWatch reports 30 FPS in-game.")],true);}
+    internal bool VerifySettings(){var dialog=new SettingsWindow(this,settings);var d=new DeveloperWindow(this,fetchLog,()=>{},()=>{},()=>{},()=>"test",()=>{});return dialog.Content is not null&&d.Content is not null;}
 
     private void Render()
     {
@@ -157,7 +166,7 @@ public partial class MainWindow : Window
         var all=TrackerService.Projects(state,true);
         RaceTrack.SetProjects(all);
         UpdateBrief();
-        var projects=TrackerService.Projects(state,ShowWatchlist.IsChecked==true);
+        var projects=TrackerService.Projects(state,settings.ShowWatchlist);
         Leaderboard.ItemsSource=projects;
         ActivityGrid.ItemsSource=TrackerService.Activities(state);
         Candidates.ItemsSource=TrackerService.Candidates(state);
@@ -179,24 +188,25 @@ public partial class MainWindow : Window
     {
         UpdateReleaseTimer();
         var seconds=Math.Max(0,(int)(nextScan-DateTimeOffset.UtcNow).TotalSeconds);
-        NextScan.Text=busy?"Scanning…":AutoFetch.IsChecked==true?$"Next: {seconds/60:00}:{seconds%60:00}":"Auto paused";
+        NextScan.Text=busy?"Scanning…":settings.AutoFetch?$"Next: {seconds/60:00}:{seconds%60:00}":"Auto paused";
         if(trayFetch is not null)trayFetch.Enabled=!busy;
-        if(trayAuto is not null)trayAuto.Checked=AutoFetch.IsChecked==true;
+        if(trayAuto is not null)trayAuto.Checked=settings.AutoFetch;
         if(trayStatus is not null)trayStatus.Text=NextScan.Text;
-        if(running&&!busy&&AutoFetch.IsChecked==true&&DateTimeOffset.UtcNow>=nextScan)_=FetchAsync();
+        if(running&&!busy&&settings.AutoFetch&&DateTimeOffset.UtcNow>=nextScan)_=FetchAsync();
     }
     private async Task FetchAsync()
     {
         if(busy)return;
-        busy=true;FetchButton.IsEnabled=false;FetchButton.Content="Fetching…";Status.Text="Fetching PortWatch and checking public repositories…";
+        busy=true;FetchButton.IsEnabled=false;FetchButton.Content="Fetching…";Status.Text="Fetching PortWatch and checking public repositories…";Log("Fetch started");
         try
         {
-            var progress=new Progress<string>(s=>Status.Text=s);var result=await TrackerService.Scan(state,progress,closing.Token);
+            var progress=new Progress<string>(s=>{Status.Text=s;Log(s);});var result=await TrackerService.Scan(state,progress,closing.Token);
             state=result.State;Render();Status.Text=$"Last fetch: {TrackerService.Stamp(TrackerService.Text(state,"last_scan"))}  ·  {result.ChangeCount} changes  ·  {TrackerService.Array(state,"errors").Count} warnings";
-            if(NotifyMilestones.IsChecked==true&&result.Alerts.Count>0)ShowNotifications(result.Alerts);
+            Log($"Fetch complete: {result.ChangeCount} changes, {TrackerService.Array(state,"errors").Count} warnings");foreach(var warning in TrackerService.Array(state,"errors"))Log("WARNING: "+warning?.ToString());
+            var alerts=result.Alerts.Where(settings.Accepts).ToList();if(alerts.Count>0)ShowNotifications(alerts);
         }
-        catch(OperationCanceledException){}
-        catch(Exception e){Status.Text="Fetch failed: "+e.Message;}
+        catch(OperationCanceledException){Log("Fetch cancelled");}
+        catch(Exception e){Status.Text="Fetch failed: "+e.Message;Log(Status.Text);}
         finally{busy=false;FetchButton.IsEnabled=true;FetchButton.Content="Fetch now";nextScan=DateTimeOffset.UtcNow.AddMinutes(IntervalMinutes);}
     }
     private async void FetchButton_Click(object sender,RoutedEventArgs e)=>await FetchAsync();
@@ -238,13 +248,13 @@ public partial class MainWindow : Window
         layout.Children.Add(new TextBox{Text=TrackerService.Report(state),IsReadOnly=true,TextWrapping=TextWrapping.Wrap,VerticalScrollBarVisibility=ScrollBarVisibility.Auto,Background=(Brush)FindResource("Card"),Foreground=(Brush)FindResource("Text"),BorderThickness=new Thickness(0),Padding=new Thickness(15),FontFamily=new FontFamily("Cascadia Mono, Consolas"),FontSize=13});report.Content=layout;report.Show();
     }
 
-    private void ShowNotifications(IReadOnlyList<ActivityRow> alerts)
+    private void ShowNotifications(IReadOnlyList<ActivityRow> alerts,bool test=false)
     {
         var toast=new Window{Width=390,SizeToContent=SizeToContent.Height,WindowStyle=WindowStyle.None,ResizeMode=ResizeMode.NoResize,ShowInTaskbar=false,Topmost=true,AllowsTransparency=true,Background=Brushes.Transparent,ShowActivated=false};
         var card=new Border{Background=(Brush)FindResource("CardAlt"),BorderBrush=(Brush)FindResource("Pink"),BorderThickness=new Thickness(1),CornerRadius=new CornerRadius(20),Padding=new Thickness(20)};
-        var content=new StackPanel();content.Children.Add(new TextBlock{Text="PORTWATCH  ·  MILESTONE ALERT",Foreground=(Brush)FindResource("Pink"),FontWeight=FontWeights.Bold,FontSize=12});
+        var content=new StackPanel();content.Children.Add(new TextBlock{Text=test?"PORTWATCH  ·  TEST NOTIFICATION":"PORTWATCH  ·  MILESTONE ALERT",Foreground=(Brush)FindResource("Pink"),FontWeight=FontWeights.Bold,FontSize=12});
         foreach(var alert in alerts.Take(4)){content.Children.Add(new TextBlock{Text=alert.Project,FontSize=21,FontWeight=FontWeights.Bold,Foreground=(Brush)FindResource("Peach"),Margin=new Thickness(0,12,0,2)});content.Children.Add(new TextBlock{Text=alert.Detail,TextWrapping=TextWrapping.Wrap});}
         var close=new Button{Content="Dismiss",HorizontalAlignment=HorizontalAlignment.Right,Margin=new Thickness(0,12,0,0)};close.Click+=(_,_)=>toast.Close();content.Children.Add(close);card.Child=content;toast.Content=card;toast.Loaded+=(_,_)=>{toast.Left=SystemParameters.WorkArea.Right-toast.ActualWidth-20;toast.Top=SystemParameters.WorkArea.Bottom-toast.ActualHeight-20;};toast.Show();
-        var disappear=new DispatcherTimer{Interval=TimeSpan.FromSeconds(16)};disappear.Tick+=(_,_)=>{disappear.Stop();if(toast.IsLoaded)toast.Close();};toast.Closed+=(_,_)=>disappear.Stop();disappear.Start();System.Media.SystemSounds.Asterisk.Play();
+        var disappear=new DispatcherTimer{Interval=TimeSpan.FromSeconds(settings.Duration)};disappear.Tick+=(_,_)=>{disappear.Stop();if(toast.IsLoaded)toast.Close();};toast.Closed+=(_,_)=>disappear.Stop();disappear.Start();if(settings.Sound)System.Media.SystemSounds.Asterisk.Play();
     }
 }

@@ -20,11 +20,12 @@ public partial class App : Application
             catch { Shutdown(1); }
             return;
         }
-        bool testMode=e.Args.Contains("--smoke-gui")||e.Args.Contains("--preview")||e.Args.Contains("--smoke-tray");
+        bool testMode=e.Args.Contains("--smoke-gui")||e.Args.Contains("--preview")||e.Args.Contains("--smoke-tray")||e.Args.Contains("--smoke-settings");
         if(!testMode&&!ClaimInstance()){Shutdown(0);return;}
         var window = new MainWindow();
         MainWindow = window;
         if(e.Args.Contains("--smoke-tray")){Shutdown(window.VerifyTray()?0:1);return;}
+        if(e.Args.Contains("--smoke-settings")){Shutdown(window.VerifySettings()?0:1);return;}
         if (e.Args.Contains("--smoke-gui") || e.Args.Contains("--preview"))
         {
             window.PreviewSample();
@@ -45,6 +46,7 @@ public partial class App : Application
         }
         if(showEvent is not null)showRegistration=ThreadPool.RegisterWaitForSingleObject(showEvent,(_,_)=>{if(!Dispatcher.HasShutdownStarted)Dispatcher.BeginInvoke(new Action(window.ShowFromTray));},null,Timeout.Infinite,false);
         window.Show();
+        if(e.Args.Contains("--start-hidden"))window.Dispatcher.BeginInvoke(new Action(window.StartHidden),System.Windows.Threading.DispatcherPriority.Loaded);
     }
 
     private bool ClaimInstance()

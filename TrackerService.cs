@@ -224,12 +224,12 @@ public static class TrackerService
 
     public static async Task<ScanResult> Scan(JsonObject state,IProgress<string>? progress,CancellationToken token)
     {
-        string scanStarted=Now();var old=Object(state,"tracker");var tracker=(JsonObject)old.DeepClone();var errors=new List<string>();
-        try{tracker=await GetTracker(token).ConfigureAwait(false);}catch(Exception e) when(e is not OperationCanceledException){errors.Add("PortWatch data: "+e.Message);}
+        string scanStarted=Now();var old=Object(state,"tracker");var tracker=(JsonObject)old.DeepClone();var errors=new List<string>();progress?.Report("Fetching PortWatch editorial data…");
+        try{tracker=await GetTracker(token).ConfigureAwait(false);progress?.Report("PortWatch data received: "+Array(tracker,"efforts").Count+" efforts");}catch(Exception e) when(e is not OperationCanceledException){errors.Add("PortWatch data: "+e.Message);progress?.Report("PortWatch source unavailable; using cache");}
         var changes=Compare(old,tracker);var live=(JsonObject)Object(state,"live").DeepClone();
         var efforts=Array(tracker,"efforts").Where(x=>x is not null&&ValidRepo(Text(x,"repo"))&&!Flag(x,"nuked")).ToList();
         int completed=0; progress?.Report($"Checking public repositories: 0/{efforts.Count}");using var gate=new SemaphoreSlim(4);
-        var tasks=efforts.Select(async e=>{await gate.WaitAsync(token).ConfigureAwait(false);try{return await PollRepo(e!,Object(live,Text(e,"repo")),token).ConfigureAwait(false);}finally{gate.Release();progress?.Report($"Checking public repositories: {Interlocked.Increment(ref completed)}/{efforts.Count}");}}).ToArray();
+        var tasks=efforts.Select(async e=>{await gate.WaitAsync(token).ConfigureAwait(false);try{var result=await PollRepo(e!,Object(live,Text(e,"repo")),token).ConfigureAwait(false);progress?.Report($"{result.Repo}: {Text(result.Live,"status")} ({result.Events.Count} changes)");return result;}finally{gate.Release();progress?.Report($"Checking public repositories: {Interlocked.Increment(ref completed)}/{efforts.Count}");}}).ToArray();
         foreach(var r in await Task.WhenAll(tasks).ConfigureAwait(false)){live[r.Repo]=r.Live;changes.AddRange(r.Events);if(Text(r.Live,"error")!="")errors.Add(r.Repo+": "+Text(r.Live,"error"));}
         progress?.Report("Looking for newly created public projects…");var discovered=await Discover(tracker,Array(state,"local_candidates"),token).ConfigureAwait(false);changes.AddRange(discovered.Events);errors.AddRange(discovered.Errors);
         changes=changes.OrderByDescending(x=>Text(x,"time")).ToList();

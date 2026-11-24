@@ -1,0 +1,17 @@
+using System.Text.Json.Nodes;
+
+namespace PortwatchDesktop;
+
+internal sealed record UserSettings(bool AutoFetch=true,int Interval=15,bool Notifications=true,bool Notify30=true,bool NotifyStable=true,bool Sound=true,int Duration=16,bool CloseToTray=true,bool ShowWatchlist=true)
+{
+    internal static readonly int[] Intervals=[5,10,15,30,60,120];
+    internal static readonly int[] Durations=[5,10,16,30,60];
+    public static UserSettings Load()
+    {
+        var data=TrackerService.Load(TrackerService.SettingsFile);
+        int interval=(int)TrackerService.Number(data,"interval"),duration=(int)TrackerService.Number(data,"duration");
+        return new(TrackerService.Flag(data,"auto",true),Intervals.Contains(interval)?interval:15,TrackerService.Flag(data,"notifications",true),TrackerService.Flag(data,"notify30",true),TrackerService.Flag(data,"notify_stable",true),TrackerService.Flag(data,"sound",true),Durations.Contains(duration)?duration:16,TrackerService.Flag(data,"close_to_tray",true),TrackerService.Flag(data,"show_watchlist",true));
+    }
+    public void Save()=>TrackerService.Save(TrackerService.SettingsFile,new JsonObject{["auto"]=AutoFetch,["interval"]=Interval,["notifications"]=Notifications,["notify30"]=Notify30,["notify_stable"]=NotifyStable,["sound"]=Sound,["duration"]=Duration,["close_to_tray"]=CloseToTray,["show_watchlist"]=ShowWatchlist});
+    public bool Accepts(ActivityRow alert)=>Notifications&&(alert.Detail.Contains("100% stable",StringComparison.OrdinalIgnoreCase)?NotifyStable:Notify30);
+}

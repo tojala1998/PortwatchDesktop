@@ -23,7 +23,9 @@ Closing the window keeps it running in the notification area. Right-click the tr
 
 ## Download
 
-Download the Windows executable from the repository's Releases section. The self-contained release needs no separate .NET installation. A framework-dependent build requires the Windows .NET 8 Desktop Runtime.
+Download either `PortwatchDesktop-Setup.exe` (per-user installation with Start menu and optional desktop/startup shortcuts) or `PortwatchDesktop-Portable.exe` (no installation) from Releases. Both self-contained builds need no separate .NET installation and share settings and cached data. The installer uses `%LOCALAPPDATA%\Programs\PortwatchDesktop` and can be removed through Windows Installed Apps.
+
+Open Settings with the gear icon to configure automatic fetch, notification types, sound, duration, watchlist visibility, and close-to-tray behavior. Holding **Shift** while clicking the gear opens developer mode: test either milestone notification, watch session fetch logs, and copy diagnostics. Test notifications do not modify tracked milestones.
 
 ## Build from source
 
