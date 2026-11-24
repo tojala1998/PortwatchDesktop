@@ -9,6 +9,7 @@ A small, unofficial Windows desktop dashboard for following PortWatch VI's publi
 - Compact Intelligence Brief synthesized locally from the tracker, milestone data, reported blockers, and recent GitHub activity (no external AI service or API key)
 - Fetch Now (F5) and adjustable 5–120 minute automatic refresh
 - Public GitHub commit, release, and README change monitoring
+- Confirmed dead projects are struck through, unranked, and excluded from fetches; hide them individually and restore them from Settings
 - New public project candidates and repository links
 - Milestone alerts for 30 FPS in-game or stable gameplay
 - Close the dashboard to the Windows notification area for passive monitoring; reopen or explicitly exit using the tray icon

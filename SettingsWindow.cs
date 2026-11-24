@@ -22,6 +22,7 @@ internal sealed class SettingsWindow : Window
         auto=Check(fetch,"Automatically fetch updates",settings.AutoFetch);
         interval=Select(fetch,"Fetch interval",UserSettings.Intervals,settings.Interval," min");
         watchlist=Check(fetch,"Show watchlist in the leaderboard",settings.ShowWatchlist);
+        string[] hiddenDead=settings.HiddenDead;var restore=new Button{Content=$"Restore hidden dead projects ({hiddenDead.Length})",IsEnabled=hiddenDead.Length>0,HorizontalAlignment=HorizontalAlignment.Left,Margin=new Thickness(0,6,0,0)};restore.Click+=(_,_)=>{hiddenDead=[];restore.Content="Hidden projects restored on save";restore.IsEnabled=false;};fetch.Children.Add(restore);
         var alerts=Section(stack,"NOTIFICATIONS");
         notifications=Check(alerts,"Enable milestone notifications",settings.Notifications);
         fps=Check(alerts,"30 FPS in-game",settings.Notify30);stable=Check(alerts,"100% stable",settings.NotifyStable);sound=Check(alerts,"Play notification sound",settings.Sound);
@@ -31,7 +32,7 @@ internal sealed class SettingsWindow : Window
         auto.Checked+=(_,_)=>interval.IsEnabled=true;auto.Unchecked+=(_,_)=>interval.IsEnabled=false;interval.IsEnabled=settings.AutoFetch;
         void UpdateAlerts(){foreach(var control in new Control[]{fps,stable,sound,duration})control.IsEnabled=notifications.IsChecked==true;}
         notifications.Checked+=(_,_)=>UpdateAlerts();notifications.Unchecked+=(_,_)=>UpdateAlerts();UpdateAlerts();
-        save.Click+=(_,_)=>{Result=new UserSettings(auto.IsChecked==true,UserSettings.Intervals[interval.SelectedIndex],notifications.IsChecked==true,fps.IsChecked==true,stable.IsChecked==true,sound.IsChecked==true,UserSettings.Durations[duration.SelectedIndex],tray.IsChecked==true,watchlist.IsChecked==true);DialogResult=true;};
+        save.Click+=(_,_)=>{Result=new UserSettings(auto.IsChecked==true,UserSettings.Intervals[interval.SelectedIndex],notifications.IsChecked==true,fps.IsChecked==true,stable.IsChecked==true,sound.IsChecked==true,UserSettings.Durations[duration.SelectedIndex],tray.IsChecked==true,watchlist.IsChecked==true){HiddenDead=hiddenDead};DialogResult=true;};
         Content=content;
     }
     private StackPanel Section(StackPanel main,string title)

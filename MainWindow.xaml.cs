@@ -166,7 +166,7 @@ public partial class MainWindow : Window
         var all=TrackerService.Projects(state,true);
         RaceTrack.SetProjects(all);
         UpdateBrief();
-        var projects=TrackerService.Projects(state,settings.ShowWatchlist);
+        var projects=TrackerService.Projects(state,settings.ShowWatchlist).Where(p=>!p.Dead||!settings.HiddenDead.Contains(p.HideKey,StringComparer.OrdinalIgnoreCase)).ToList();
         Leaderboard.ItemsSource=projects;
         ActivityGrid.ItemsSource=TrackerService.Activities(state);
         Candidates.ItemsSource=TrackerService.Candidates(state);
@@ -176,7 +176,7 @@ public partial class MainWindow : Window
         if(leader is not null){LeaderName.Text=leader.Name;LeaderScore.Text=leader.ScoreText;LeaderMilestone.Text=leader.Stage+"  ·  PortWatch editorial estimate";leadPoints=leader.Score;}
         else{LeaderName.Text="Waiting for data";LeaderScore.Text="—%";LeaderMilestone.Text="Awaiting PortWatch data";leadPoints=0;}
         UpdateProgress();
-        Summary.Text=$"{all.Count} efforts  ·  PortWatch data: {TrackerService.Stamp(TrackerService.Text(TrackerService.Object(state,"tracker"),"updated"))}";
+        Summary.Text=$"{all.Count(p=>!p.Dead)} active efforts  ·  {all.Count(p=>p.Dead)} dead  ·  PortWatch data: {TrackerService.Stamp(TrackerService.Text(TrackerService.Object(state,"tracker"),"updated"))}";
         string last=TrackerService.Text(state,"last_scan");if(last!="")Status.Text=$"Last fetch: {TrackerService.Stamp(last)}  ·  {TrackerService.Array(state,"errors").Count} source warnings";
         UpdateReleaseTimer();
     }
@@ -225,8 +225,10 @@ public partial class MainWindow : Window
     private void Leaderboard_SelectionChanged(object sender,SelectionChangedEventArgs e)
     {
         if(ProjectDetail is null)return;
-        ProjectDetail.Text=Leaderboard.SelectedItem is ProjectRow row?$"{row.Name} ({row.ScoreText}) — {row.Detail}":"Select a project for details.";
+        ProjectDetail.Text=Leaderboard.SelectedItem is ProjectRow row?$"{row.DisplayName} ({row.ScoreText}) — {row.Detail}":"Select a project for details.";
+        if(RemoveDead is not null)RemoveDead.Visibility=Leaderboard.SelectedItem is ProjectRow {Dead:true}?Visibility.Visible:Visibility.Collapsed;
     }
+    private void RemoveDead_Click(object sender,RoutedEventArgs e){if(Leaderboard.SelectedItem is ProjectRow {Dead:true} row)ApplySettings(settings with{HiddenDead=settings.HiddenDead.Append(row.HideKey).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()});}
     private static void Open(string url){try{Process.Start(new ProcessStartInfo(url){UseShellExecute=true});}catch{MessageBox.Show("Unable to open the link.","Portwatch Desktop");}}
     private static void OpenRepo(string? repo){if(repo is not null&&TrackerService.ValidRepo(repo))Open("https://github.com/"+repo);}
     private void OpenProject_Click(object sender,RoutedEventArgs e)=>OpenRepo((Leaderboard.SelectedItem as ProjectRow)?.Repo);

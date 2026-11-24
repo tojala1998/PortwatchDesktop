@@ -12,7 +12,11 @@ using System.Xml.Linq;
 
 namespace PortwatchDesktop;
 
-public sealed record ProjectRow(string Rank, string Name, string ScoreText, string Stage, string CommitTime, string Status, string CommitTitle, string Repo, string Detail, double Score);
+public sealed record ProjectRow(string Rank, string Name, string ScoreText, string Stage, string CommitTime, string Status, string CommitTitle, string Repo, string Detail, double Score, bool Dead=false)
+{
+    public string DisplayName=>Dead?Name+" (Dead)":Name;
+    public string HideKey=>Repo!=""?Repo:Name;
+}
 public sealed record CandidateRow(string Repo, string Source, string Substance, string Found, string Description);
 public sealed record ActivityRow(string Time, string Project, string Kind, string Detail);
 public sealed record ScanResult(JsonObject State, int ChangeCount, IReadOnlyList<ActivityRow> Alerts);
@@ -34,6 +38,7 @@ public static class TrackerService
     public static JsonObject Object(JsonNode? node, string key) => node is JsonObject o && o[key] is JsonObject child ? child : new();
     public static JsonArray Array(JsonNode? node, string key) => node is JsonObject o && o[key] is JsonArray child ? child : new();
     public static bool Flag(JsonNode? node, string key, bool fallback = false) => bool.TryParse(Text(node,key),out var b) ? b : fallback;
+    public static bool IsDead(JsonNode? effort)=>effort is JsonObject obj&&(obj["nuked"] is JsonObject || Flag(effort,"nuked"));
     public static double Number(JsonNode? node, string key) => double.TryParse(Text(node,key),NumberStyles.Any,CultureInfo.InvariantCulture,out var n) ? n : Flag(node,key) ? 1 : 0;
     public static string Stamp(string value) => DateTimeOffset.TryParse(value,out var t) ? t.ToLocalTime().ToString("MMM dd HH:mm",CultureInfo.InvariantCulture) : "—";
     public static bool ValidRepo(string repo) => RepoPattern.IsMatch(repo) && !repo.Split('/').Any(x => x is "." or "..");
@@ -187,8 +192,8 @@ public static class TrackerService
         foreach(var effort in Array(tracker,"efforts"))
         {
             prior.TryGetValue(Text(effort,"id"),out var before);string name=Text(effort,"name","Project");var score=Score(effort);var was=Score(before);
-            if(before is null)changes.Add(Event(name,"New tracked project","Added by PortWatch"));else if(score.Points!=was.Points)changes.Add(Event(name,"Score",$"PortWatch: {was.Points:g}% → {score.Points:g}%"));else if(Flag(before,"nuked")!=Flag(effort,"nuked"))changes.Add(Event(name,"Status","PortWatch updated availability"));
-            if(Flag(effort,"nuked"))continue;
+            if(before is null)changes.Add(Event(name,"New tracked project","Added by PortWatch"));else if(IsDead(before)!=IsDead(effort))changes.Add(Event(name,"Status",IsDead(effort)?"PortWatch marked project dead":"PortWatch restored project"));else if(score.Points!=was.Points)changes.Add(Event(name,"Score",$"PortWatch: {was.Points:g}% → {score.Points:g}%"));
+            if(IsDead(effort))continue;
             if(score.Stage=="Stable"&&was.Stage!="Stable")changes.Add(Event(name,"Milestone alert","PortWatch reports 100% stable gameplay (30 FPS or higher)."));
             else if(score.Stage=="30 FPS"&&was.Stage is not ("Stable" or "30 FPS"))changes.Add(Event(name,"Milestone alert","PortWatch reports 30 FPS in-game."));
         }
@@ -227,7 +232,7 @@ public static class TrackerService
         string scanStarted=Now();var old=Object(state,"tracker");var tracker=(JsonObject)old.DeepClone();var errors=new List<string>();progress?.Report("Fetching PortWatch editorial data…");
         try{tracker=await GetTracker(token).ConfigureAwait(false);progress?.Report("PortWatch data received: "+Array(tracker,"efforts").Count+" efforts");}catch(Exception e) when(e is not OperationCanceledException){errors.Add("PortWatch data: "+e.Message);progress?.Report("PortWatch source unavailable; using cache");}
         var changes=Compare(old,tracker);var live=(JsonObject)Object(state,"live").DeepClone();
-        var efforts=Array(tracker,"efforts").Where(x=>x is not null&&ValidRepo(Text(x,"repo"))&&!Flag(x,"nuked")).ToList();
+        var efforts=Array(tracker,"efforts").Where(x=>x is not null&&ValidRepo(Text(x,"repo"))&&!IsDead(x)).ToList();
         int completed=0; progress?.Report($"Checking public repositories: 0/{efforts.Count}");using var gate=new SemaphoreSlim(4);
         var tasks=efforts.Select(async e=>{await gate.WaitAsync(token).ConfigureAwait(false);try{var result=await PollRepo(e!,Object(live,Text(e,"repo")),token).ConfigureAwait(false);progress?.Report($"{result.Repo}: {Text(result.Live,"status")} ({result.Events.Count} changes)");return result;}finally{gate.Release();progress?.Report($"Checking public repositories: {Interlocked.Increment(ref completed)}/{efforts.Count}");}}).ToArray();
         foreach(var r in await Task.WhenAll(tasks).ConfigureAwait(false)){live[r.Repo]=r.Live;changes.AddRange(r.Events);if(Text(r.Live,"error")!="")errors.Add(r.Repo+": "+Text(r.Live,"error"));}
@@ -241,9 +246,10 @@ public static class TrackerService
     public static IReadOnlyList<ProjectRow> Projects(JsonObject state,bool watchlist=true)
     {
         var tracker=Object(state,"tracker");var live=Object(state,"live");int rank=0;
-        return Array(tracker,"efforts").OrderBy(x=>Flag(x,"nuked")).ThenByDescending(x=>Score(x).Points).ThenByDescending(x=>Number(Object(x,"stats"),"stars")).Where(x=>watchlist||Text(x,"tier")=="tracked").Select(e=>{
-            string repo=Text(e,"repo");var score=Score(e);var record=Object(live,repo);var commit=Object(record,"commit");bool offline=Flag(e,"nuked");string r=Text(e,"tier")=="tracked"&&!offline?(++rank).ToString():"—";
-            return new ProjectRow(r,Text(e,"name",repo),$"{score.Points:g}%",score.Stage,Stamp(Text(commit,"updated",Text(Object(e,"stats"),"pushedAt"))),offline?"Offline":Text(record,"status",repo==""?"Private":"Not checked"),Text(commit,"title","—"),repo,Text(e,"summary","No summary")+"  ·  "+Text(e,"verification","unverified"),score.Points);
+        return Array(tracker,"efforts").OrderBy(IsDead).ThenByDescending(x=>Score(x).Points).ThenByDescending(x=>Number(Object(x,"stats"),"stars")).Where(x=>watchlist||Text(x,"tier")=="tracked").Select(e=>{
+            string repo=Text(e,"repo");var score=Score(e);var record=Object(live,repo);var commit=Object(record,"commit");bool dead=IsDead(e);string r=Text(e,"tier")=="tracked"&&!dead?(++rank).ToString():"—";
+            string detail=Text(e,"summary","No summary")+"  ·  "+Text(e,"verification","unverified");if(dead){var note=Text(Object(e,"nuked"),"note");if(note!="")detail+="  ·  "+note;}
+            return new ProjectRow(r,Text(e,"name",repo),$"{score.Points:g}%",score.Stage,Stamp(Text(commit,"updated",Text(Object(e,"stats"),"pushedAt"))),dead?"Dead":Text(record,"status",repo==""?"Private":"Not checked"),Text(commit,"title","—"),repo,detail,score.Points,dead);
         }).ToList();
     }
     private static ActivityRow ToActivity(JsonNode? e)=>new(Stamp(Text(e,"time")),Text(e,"project"),Text(e,"kind"),Text(e,"detail"));
@@ -301,6 +307,7 @@ public static class TrackerService
         var old=JsonNode.Parse("{\"efforts\":[{\"id\":\"x\",\"name\":\"X\",\"gta\":{\"loads\":1,\"boots\":1,\"menu\":1,\"ingame\":1,\"fps\":4}}]}")!.AsObject();
         var fresh=JsonNode.Parse("{\"efforts\":[{\"id\":\"x\",\"name\":\"X\",\"gta\":{\"loads\":1,\"boots\":1,\"menu\":1,\"ingame\":1,\"fps\":30,\"stability\":\"stable\"}}]}")!.AsObject();
         if(!Compare(old,fresh).Any(x=>Text(x,"kind")=="Milestone alert"))throw new Exception("Alert failed");if(!ValidRepo("owner/repo")||ValidRepo("../repo"))throw new Exception("Identifier failed");
+        var deadData=JsonNode.Parse("""{"tracker":{"efforts":[{"id":"gone","name":"Gone","repo":"owner/gone","tier":"tracked","nuked":{"at":"2026-11-23","note":"Deleted"},"gta":{"loads":1}}]}}""")!.AsObject();var deadRow=Projects(deadData).Single();if(!deadRow.Dead||deadRow.Rank!="—"||deadRow.Status!="Dead")throw new Exception("Dead project classification failed");
         var brief=IntelligenceBrief(JsonNode.Parse("""
         {"tracker":{"efforts":[{"id":"a","name":"Alpha","tier":"tracked","gta":{"loads":1,"boots":1,"menu":1,"ingame":1,"fps":4}},{"id":"b","name":"Beta","repo":"example/beta","tier":"tracked","gta":{"loads":1,"boots":1,"menu":1,"ingame":0.8},"blockers":["Rendering is incomplete, GPU hangs"]}]},"live":{"example/beta":{"status":"Updated"}}}
         """)!.AsObject());if(!brief.Contains("Beta leads public efforts at 67%")||!brief.Contains("No ranked effort is listed at 30 FPS")||brief.Split(' ',StringSplitOptions.RemoveEmptyEntries).Length>75)throw new Exception("Brief failed");
