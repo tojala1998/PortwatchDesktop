@@ -5,7 +5,7 @@ A small, unofficial Windows desktop dashboard for following PortWatch VI's publi
 ## Features
 
 - Editorial leaderboard, milestone progress, and executable release timer
-- Fetch Now (F5) and adjustable 5-120 minute automatic refresh
+- Fetch Now (F5) and adjustable 5–120 minute automatic refresh
 - Public GitHub commit, release, and README change monitoring
 - New public project candidates and repository links
 - Milestone alerts for 30 FPS in-game or stable gameplay
@@ -31,4 +31,3 @@ The executable is in `bin/Release/net8.0-windows/win-x64/publish/`.
 ## Attribution
 
 The public tracker and published scoring methodology are provided by [PortWatch VI](https://portwatch-vi.xyz/) ([source](https://github.com/4lwayz/portwatch-vi)). This independent desktop app is not affiliated with its creator, Rockstar Games, or Microsoft.
-
