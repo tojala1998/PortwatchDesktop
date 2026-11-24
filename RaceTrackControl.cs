@@ -23,7 +23,7 @@ public sealed class RaceTrackControl : FrameworkElement
     public RaceTrackControl(){Cursor=Cursors.Arrow;ToolTipService.SetInitialShowDelay(this,250);}
     public void SetProjects(IEnumerable<ProjectRow> rows)
     {
-        projects=rows.Where(x=>x.Rank!="—"&&x.Status!="Offline").OrderByDescending(x=>x.Score).Take(8).ToList();
+        projects=rows.Where(x=>x.Rank!="—"&&!x.Dead&&x.Status!="Offline").OrderByDescending(x=>x.Score).Take(8).ToList();
         InvalidateVisual();
     }
 

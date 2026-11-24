@@ -108,6 +108,16 @@ public partial class MainWindow : Window
         RaceTrack.Height=ActualHeight<900?96:120;
         if(compactDashboard)
         {
+            Grid.SetRow(NavHost,1);Grid.SetColumn(NavHost,0);Grid.SetColumnSpan(NavHost,3);NavHost.Margin=new Thickness(0,12,0,0);
+            InspectorColumn.Width=new GridLength(0);Grid.SetColumn(ProjectInspector,0);Grid.SetRow(ProjectInspector,1);ProjectInspector.Margin=new Thickness(0,8,0,0);ProjectInspector.MaxHeight=160;
+        }
+        else
+        {
+            Grid.SetRow(NavHost,0);Grid.SetColumn(NavHost,1);Grid.SetColumnSpan(NavHost,1);NavHost.Margin=new Thickness(12,0,12,0);
+            InspectorColumn.Width=new GridLength(width>1600?370:320);Grid.SetColumn(ProjectInspector,1);Grid.SetRow(ProjectInspector,0);ProjectInspector.Margin=new Thickness(10,0,0,0);ProjectInspector.MaxHeight=double.PositiveInfinity;
+        }
+        if(compactDashboard)
+        {
             DashboardLeft.Width=new GridLength(1,GridUnitType.Star);DashboardRight.Width=new GridLength(0);
             Grid.SetColumn(BriefCard,0);Grid.SetRow(BriefCard,2);Grid.SetRowSpan(BriefCard,1);
             LeadCards.Margin=new Thickness(0,0,0,12);RaceCard.Margin=new Thickness(0);BriefCard.Margin=new Thickness(0,12,0,0);
@@ -172,7 +182,7 @@ public partial class MainWindow : Window
         Candidates.ItemsSource=TrackerService.Candidates(state);
         if(selected is not null)Leaderboard.SelectedItem=projects.FirstOrDefault(p=>p.Repo==selected);
         if(Leaderboard.SelectedItem is null&&projects.Count>0)Leaderboard.SelectedIndex=0;
-        var leader=all.FirstOrDefault(x=>x.Rank=="1");
+        var leader=all.FirstOrDefault(x=>x.Rank!="—"&&!x.Dead);
         if(leader is not null){LeaderName.Text=leader.Name;LeaderScore.Text=leader.ScoreText;LeaderMilestone.Text=leader.Stage+"  ·  PortWatch editorial estimate";leadPoints=leader.Score;}
         else{LeaderName.Text="Waiting for data";LeaderScore.Text="—%";LeaderMilestone.Text="Awaiting PortWatch data";leadPoints=0;}
         UpdateProgress();
@@ -224,10 +234,13 @@ public partial class MainWindow : Window
     }
     private void Leaderboard_SelectionChanged(object sender,SelectionChangedEventArgs e)
     {
-        if(ProjectDetail is null)return;
-        ProjectDetail.Text=Leaderboard.SelectedItem is ProjectRow row?$"{row.DisplayName} ({row.ScoreText}) — {row.Detail}":"Select a project for details.";
+        if(ProjectDetail is null||ProjectTitle is null||ProjectMeta is null||ProjectCommit is null)return;
+        if(Leaderboard.SelectedItem is ProjectRow row){ProjectTitle.Text=$"{row.DisplayName}  ·  {row.ScoreText}";ProjectMeta.Text=$"{row.Stage} · {row.Status} · {row.CommitTime}";ProjectDetail.Text=row.Detail;ProjectCommit.Text=row.CommitTitle;}
+        else{ProjectTitle.Text="Select a project";ProjectMeta.Text="";ProjectDetail.Text="Select a project for details.";ProjectCommit.Text="—";}
         if(RemoveDead is not null)RemoveDead.Visibility=Leaderboard.SelectedItem is ProjectRow {Dead:true}?Visibility.Visible:Visibility.Collapsed;
     }
+    private void Navigation_Click(object sender,RoutedEventArgs e){Tabs.SelectedIndex=sender==NavActivity?1:sender==NavCandidates?2:0;}
+    private void Tabs_SelectionChanged(object sender,SelectionChangedEventArgs e){if(e.Source!=Tabs||NavLeaderboard is null||NavActivity is null||NavCandidates is null)return;NavLeaderboard.IsChecked=Tabs.SelectedIndex==0;NavActivity.IsChecked=Tabs.SelectedIndex==1;NavCandidates.IsChecked=Tabs.SelectedIndex==2;}
     private void RemoveDead_Click(object sender,RoutedEventArgs e){if(Leaderboard.SelectedItem is ProjectRow {Dead:true} row)ApplySettings(settings with{HiddenDead=settings.HiddenDead.Append(row.HideKey).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()});}
     private static void Open(string url){try{Process.Start(new ProcessStartInfo(url){UseShellExecute=true});}catch{MessageBox.Show("Unable to open the link.","Portwatch Desktop");}}
     private static void OpenRepo(string? repo){if(repo is not null&&TrackerService.ValidRepo(repo))Open("https://github.com/"+repo);}

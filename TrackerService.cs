@@ -246,8 +246,8 @@ public static class TrackerService
     public static IReadOnlyList<ProjectRow> Projects(JsonObject state,bool watchlist=true)
     {
         var tracker=Object(state,"tracker");var live=Object(state,"live");int rank=0;
-        return Array(tracker,"efforts").OrderBy(IsDead).ThenByDescending(x=>Score(x).Points).ThenByDescending(x=>Number(Object(x,"stats"),"stars")).Where(x=>watchlist||Text(x,"tier")=="tracked").Select(e=>{
-            string repo=Text(e,"repo");var score=Score(e);var record=Object(live,repo);var commit=Object(record,"commit");bool dead=IsDead(e);string r=Text(e,"tier")=="tracked"&&!dead?(++rank).ToString():"—";
+        return Array(tracker,"efforts").OrderByDescending(x=>Score(x).Points).ThenByDescending(x=>Number(Object(x,"stats"),"stars")).Where(x=>watchlist||Text(x,"tier")=="tracked").Select(e=>{
+            string repo=Text(e,"repo");var score=Score(e);var record=Object(live,repo);var commit=Object(record,"commit");bool dead=IsDead(e);string r=Text(e,"tier")=="tracked"?(++rank).ToString():"—";
             string detail=Text(e,"summary","No summary")+"  ·  "+Text(e,"verification","unverified");if(dead){var note=Text(Object(e,"nuked"),"note");if(note!="")detail+="  ·  "+note;}
             return new ProjectRow(r,Text(e,"name",repo),$"{score.Points:g}%",score.Stage,Stamp(Text(commit,"updated",Text(Object(e,"stats"),"pushedAt"))),dead?"Dead":Text(record,"status",repo==""?"Private":"Not checked"),Text(commit,"title","—"),repo,detail,score.Points,dead);
         }).ToList();
@@ -258,7 +258,7 @@ public static class TrackerService
 
     public static string IntelligenceBrief(JsonObject state,int maxWords=75)
     {
-        var ranked=Projects(state,true).Where(p=>p.Rank!="—"&&p.Status!="Offline").ToList();
+        var ranked=Projects(state,true).Where(p=>p.Rank!="—"&&!p.Dead&&p.Status!="Offline").ToList();
         if(ranked.Count==0)return "Waiting for the first fetch. This brief summarizes the current leaders, milestone status, recent repository activity, and reported blockers.";
         string Clean(string value)=>Regex.Replace(value.Trim(),@"\s+"," ");
         string JoinNames(IEnumerable<string> source){var names=source.Select(Clean).Distinct().ToArray();return names.Length switch{0=>"",1=>names[0],2=>names[0]+" and "+names[1],_=>string.Join(", ",names[..^1])+", and "+names[^1]};}
@@ -267,6 +267,8 @@ public static class TrackerService
         sentences.Add($"{Clean(lead.Name)} leads at {lead.ScoreText} ({stage}){(!ValidRepo(lead.Repo)?", with no public repository listed":"")}.");
         if(publicLead is not null&&publicLead.Name!=lead.Name)sentences.Add($"{Clean(publicLead.Name)} leads public efforts at {publicLead.ScoreText}.");
         else if(ranked.Count>1)sentences.Add($"{Clean(ranked[1].Name)} follows at {ranked[1].ScoreText}.");
+        var tracker=Object(state,"tracker");var recentDead=Array(tracker,"efforts").Where(e=>IsDead(e)&&Text(e,"tier")=="tracked"&&(Score(e).Points>=20||Number(Object(e,"stats"),"stars")>=300)).Select(e=>(Effort:e,Marked:DeadTimestamp(e,tracker))).Where(x=>x.Marked.Date is DateTimeOffset date&&date>=DateTimeOffset.UtcNow.AddDays(-7)&&date<=DateTimeOffset.UtcNow.AddDays(1)).OrderByDescending(x=>Number(Object(x.Effort,"stats"),"stars")).ThenByDescending(x=>Score(x.Effort).Points).FirstOrDefault();
+        if(recentDead.Effort is not null)sentences.Add($"PortWatch reports {Clean(Text(recentDead.Effort,"name"))} went offline {recentDead.Marked.Label}.");
         var stable=ranked.Where(p=>p.Stage=="Stable").ToList();var fast=ranked.Where(p=>p.Stage=="30 FPS").ToList();
         if(stable.Count>0)sentences.Add($"PortWatch marks {JoinNames(stable.Take(2).Select(p=>p.Name))} stable.");
         else if(fast.Count>0)sentences.Add($"PortWatch reports in-game 30 FPS for {JoinNames(fast.Take(2).Select(p=>p.Name))}; none is marked stable.");
@@ -291,6 +293,37 @@ public static class TrackerService
         return string.Join(" ",brief);
     }
 
+    private static string LocalMoment(DateTimeOffset value)
+    {
+        var local=value.ToLocalTime();var zone=TimeZoneInfo.Local;bool daylight=zone.IsDaylightSavingTime(local);
+        string suffix=zone.Id switch{"Eastern Standard Time"=>daylight?"EDT":"EST","Central Standard Time"=>daylight?"CDT":"CST","Mountain Standard Time"=>daylight?"MDT":"MST","Pacific Standard Time"=>daylight?"PDT":"PST",_=>"local time"};
+        return $"{local:MMM d, h:mm tt} {suffix}";
+    }
+
+    private static (DateTimeOffset? Date,string Label) DeadTimestamp(JsonNode? effort,JsonObject tracker)
+    {
+        var dead=Object(effort,"nuked");string raw=Text(dead,"at");
+        if(DateOnly.TryParseExact(raw,"yyyy-MM-dd",CultureInfo.InvariantCulture,DateTimeStyles.None,out var day))
+        {
+            var explicitUtc=Regex.Match(Text(dead,"note"),@"\b(\d{1,2}):(\d{2})\s*UTC\b",RegexOptions.IgnoreCase);
+            if(explicitUtc.Success&&int.TryParse(explicitUtc.Groups[1].Value,out int h)&&int.TryParse(explicitUtc.Groups[2].Value,out int m)&&h<24&&m<60)
+            {
+                var utc=new DateTimeOffset(day.ToDateTime(new TimeOnly(h,m),DateTimeKind.Utc));return(utc,"around "+LocalMoment(utc));
+            }
+            string name=Text(effort,"name");
+            foreach(var news in Array(tracker,"news").Where(n=>Text(n,"date")==raw&&Text(n,"title").StartsWith(name+" ",StringComparison.OrdinalIgnoreCase)))
+                foreach(var line in Array(news,"body").Select(x=>x?.ToString()??""))
+                {
+                    if(!line.Contains(" UTC",StringComparison.OrdinalIgnoreCase))continue;
+                    var gone=Regex.Match(line,@"\b(By|At|around|about)\s+(\d{1,2}):(\d{2})(?:\s+UTC)?\s+(?:its\s+)?(?:GitHub\s+)?repo(?:sitory)?\s+(?:was|went|became)\s+(?:gone|offline|unavailable|deleted)\b",RegexOptions.IgnoreCase);
+                    if(gone.Success&&int.TryParse(gone.Groups[2].Value,out int nh)&&int.TryParse(gone.Groups[3].Value,out int nm)&&nh<24&&nm<60){var utc=new DateTimeOffset(day.ToDateTime(new TimeOnly(nh,nm),DateTimeKind.Utc));return(utc,(gone.Groups[1].Value.Equals("By",StringComparison.OrdinalIgnoreCase)?"by ":"around ")+LocalMoment(utc));}
+                }
+            return(new DateTimeOffset(day.ToDateTime(TimeOnly.MinValue,DateTimeKind.Utc)),"on "+day.ToString("MMM d",CultureInfo.InvariantCulture));
+        }
+        if(DateTimeOffset.TryParse(raw,CultureInfo.InvariantCulture,DateTimeStyles.AssumeUniversal,out var timestamp))return(timestamp,"around "+LocalMoment(timestamp));
+        return(null,"");
+    }
+
     public static string Report(JsonObject state)
     {
         var b=new StringBuilder("PORTWATCH DESKTOP — SCAN REPORT\n==============================================\n");
@@ -307,7 +340,8 @@ public static class TrackerService
         var old=JsonNode.Parse("{\"efforts\":[{\"id\":\"x\",\"name\":\"X\",\"gta\":{\"loads\":1,\"boots\":1,\"menu\":1,\"ingame\":1,\"fps\":4}}]}")!.AsObject();
         var fresh=JsonNode.Parse("{\"efforts\":[{\"id\":\"x\",\"name\":\"X\",\"gta\":{\"loads\":1,\"boots\":1,\"menu\":1,\"ingame\":1,\"fps\":30,\"stability\":\"stable\"}}]}")!.AsObject();
         if(!Compare(old,fresh).Any(x=>Text(x,"kind")=="Milestone alert"))throw new Exception("Alert failed");if(!ValidRepo("owner/repo")||ValidRepo("../repo"))throw new Exception("Identifier failed");
-        var deadData=JsonNode.Parse("""{"tracker":{"efforts":[{"id":"gone","name":"Gone","repo":"owner/gone","tier":"tracked","nuked":{"at":"2026-11-23","note":"Deleted"},"gta":{"loads":1}}]}}""")!.AsObject();var deadRow=Projects(deadData).Single();if(!deadRow.Dead||deadRow.Rank!="—"||deadRow.Status!="Dead")throw new Exception("Dead project classification failed");
+        var deadData=JsonNode.Parse("""{"tracker":{"efforts":[{"id":"gone","name":"Gone","repo":"owner/gone","tier":"tracked","nuked":{"at":"2026-11-23","note":"Deleted"},"gta":{"loads":1}}]}}""")!.AsObject();var deadRow=Projects(deadData).Single();if(!deadRow.Dead||deadRow.Rank!="1"||deadRow.Status!="Dead")throw new Exception("Dead project classification failed");
+        var deathTracker=JsonNode.Parse("""{"efforts":[{"name":"Gone","nuked":{"at":"2026-11-23","note":"Deleted"}}],"news":[{"date":"2026-11-23","title":"Gone is offline","body":["The Discord went offline at 23:07 UTC. By 23:47 its GitHub repository was gone."]}]}""")!.AsObject();var death=DeadTimestamp(Array(deathTracker,"efforts")[0],deathTracker);if(death.Date!=DateTimeOffset.Parse("2026-11-23T23:47:00Z")||!death.Label.StartsWith("by "))throw new Exception("Death timestamp failed");
         var brief=IntelligenceBrief(JsonNode.Parse("""
         {"tracker":{"efforts":[{"id":"a","name":"Alpha","tier":"tracked","gta":{"loads":1,"boots":1,"menu":1,"ingame":1,"fps":4}},{"id":"b","name":"Beta","repo":"example/beta","tier":"tracked","gta":{"loads":1,"boots":1,"menu":1,"ingame":0.8},"blockers":["Rendering is incomplete, GPU hangs"]}]},"live":{"example/beta":{"status":"Updated"}}}
         """)!.AsObject());if(!brief.Contains("Beta leads public efforts at 67%")||!brief.Contains("No ranked effort is listed at 30 FPS")||brief.Split(' ',StringSplitOptions.RemoveEmptyEntries).Length>75)throw new Exception("Brief failed");
