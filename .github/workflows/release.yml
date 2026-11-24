@@ -20,7 +20,7 @@ jobs:
       - name: Verify executable
         shell: pwsh
         run: |
-          foreach ($arg in @('--self-test','--smoke-gui')) {
+          foreach ($arg in @('--self-test','--smoke-gui','--smoke-tray')) {
             $test = Start-Process -FilePath ./artifacts/PortwatchDesktop.exe -ArgumentList $arg -Wait -PassThru -WindowStyle Hidden
             if ($test.ExitCode -ne 0) { throw "$arg failed with exit code $($test.ExitCode)" }
           }

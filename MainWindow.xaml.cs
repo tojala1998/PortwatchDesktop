@@ -9,6 +9,8 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using System.Windows.Interop;
 using System.Runtime.InteropServices;
+using Forms = System.Windows.Forms;
+using Drawing = System.Drawing;
 
 namespace PortwatchDesktop;
 
@@ -19,7 +21,10 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer timer = new() { Interval=TimeSpan.FromMilliseconds(250) };
     private readonly CancellationTokenSource closing = new();
     private DateTimeOffset nextScan=DateTimeOffset.UtcNow;
-    private bool initialized, busy, fullscreen;
+    private bool initialized, busy, fullscreen, running, allowExit, trayHintShown;
+    private Forms.NotifyIcon? trayIcon;
+    private Forms.ToolStripMenuItem? trayFetch, trayAuto, trayStatus;
+    private Drawing.Icon? trayImage;
     private WindowState previousState;
     private WindowStyle previousStyle;
     private ResizeMode previousResize;
@@ -42,11 +47,61 @@ public partial class MainWindow : Window
         NotifyMilestones.IsChecked=TrackerService.Flag(settings,"notifications",true);
         initialized=true;
         Render();ClockTick();
-        Loaded+=(_,_)=>{timer.Tick+=(_,_)=>ClockTick();timer.Start();};
-        Closed+=(_,_)=>{timer.Stop();closing.Cancel();};
+        Loaded+=(_,_)=>{if(running)return;running=true;InitializeTray();timer.Tick+=(_,_)=>ClockTick();timer.Start();};
+        Closing+=(_,e)=>{if(!allowExit&&trayIcon is not null){e.Cancel=true;HideToTray();}};
+        Closed+=(_,_)=>{timer.Stop();closing.Cancel();DisposeTray();};
+        System.Windows.Application.Current.SessionEnding+=(_,_)=>{allowExit=true;DisposeTray();};
     }
 
     private int IntervalMinutes => Interval.SelectedIndex>=0&&Interval.SelectedIndex<intervals.Length?intervals[Interval.SelectedIndex]:15;
+
+    private void InitializeTray()
+    {
+        try
+        {
+            var resource=System.Windows.Application.GetResourceStream(new Uri("pack://application:,,,/portwatch.ico"));
+            if(resource is not null){using var stream=resource.Stream;using var icon=new Drawing.Icon(stream);trayImage=(Drawing.Icon)icon.Clone();}
+            trayImage??=(Drawing.Icon)Drawing.SystemIcons.Application.Clone();
+            var menu=new Forms.ContextMenuStrip();
+            var show=new Forms.ToolStripMenuItem("Show dashboard");show.Click+=(_,_)=>Dispatcher.Invoke(ShowFromTray);
+            trayFetch=new Forms.ToolStripMenuItem("Fetch now");trayFetch.Click+=(_,_)=>Dispatcher.Invoke(()=>_ = FetchAsync());
+            trayAuto=new Forms.ToolStripMenuItem("Auto-fetch"){Checked=AutoFetch.IsChecked==true};trayAuto.Click+=(_,_)=>Dispatcher.Invoke(()=>AutoFetch.IsChecked=AutoFetch.IsChecked!=true);
+            trayStatus=new Forms.ToolStripMenuItem("Ready"){Enabled=false};
+            var exit=new Forms.ToolStripMenuItem("Exit Portwatch");exit.Click+=(_,_)=>Dispatcher.Invoke(ExitFromTray);
+            menu.Items.AddRange([show,trayFetch,trayAuto,trayStatus,new Forms.ToolStripSeparator(),exit]);
+            trayIcon=new Forms.NotifyIcon{Icon=trayImage,Text="Portwatch Desktop",ContextMenuStrip=menu,Visible=true};
+            trayIcon.DoubleClick+=(_,_)=>Dispatcher.Invoke(ShowFromTray);
+            trayIcon.BalloonTipClicked+=(_,_)=>Dispatcher.Invoke(ShowFromTray);
+        }
+        catch(Exception){DisposeTray();}
+    }
+
+    private void HideToTray()
+    {
+        if(fullscreen)ToggleFullscreen();
+        Hide();
+        if(!trayHintShown&&trayIcon is not null)
+        {
+            trayHintShown=true;trayIcon.ShowBalloonTip(3000,"Portwatch Desktop","Still running in the notification area. Double-click the icon to reopen, or right-click to exit.",Forms.ToolTipIcon.Info);
+        }
+    }
+
+    internal void ShowFromTray()
+    {
+        if(!IsVisible)Show();
+        if(WindowState==WindowState.Minimized)WindowState=WindowState.Normal;
+        Activate();
+    }
+
+    private void ExitFromTray(){allowExit=true;Close();}
+
+    private void DisposeTray()
+    {
+        if(trayIcon is not null){trayIcon.Visible=false;trayIcon.ContextMenuStrip?.Dispose();trayIcon.Dispose();trayIcon=null;}
+        trayImage?.Dispose();trayImage=null;
+    }
+
+    internal bool VerifyTray(){InitializeTray();bool ready=trayIcon is not null&&trayIcon.Visible;DisposeTray();return ready;}
 
     private void UpdateDashboardLayout()
     {
@@ -125,7 +180,10 @@ public partial class MainWindow : Window
         UpdateReleaseTimer();
         var seconds=Math.Max(0,(int)(nextScan-DateTimeOffset.UtcNow).TotalSeconds);
         NextScan.Text=busy?"Scanning…":AutoFetch.IsChecked==true?$"Next: {seconds/60:00}:{seconds%60:00}":"Auto paused";
-        if(initialized&&IsLoaded&&!busy&&AutoFetch.IsChecked==true&&DateTimeOffset.UtcNow>=nextScan)_=FetchAsync();
+        if(trayFetch is not null)trayFetch.Enabled=!busy;
+        if(trayAuto is not null)trayAuto.Checked=AutoFetch.IsChecked==true;
+        if(trayStatus is not null)trayStatus.Text=NextScan.Text;
+        if(running&&!busy&&AutoFetch.IsChecked==true&&DateTimeOffset.UtcNow>=nextScan)_=FetchAsync();
     }
     private async Task FetchAsync()
     {

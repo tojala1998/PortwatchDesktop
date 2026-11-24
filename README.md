@@ -11,12 +11,15 @@ A small, unofficial Windows desktop dashboard for following PortWatch VI's publi
 - Public GitHub commit, release, and README change monitoring
 - New public project candidates and repository links
 - Milestone alerts for 30 FPS in-game or stable gameplay
+- Close the dashboard to the Windows notification area for passive monitoring; reopen or explicitly exit using the tray icon
 - Save and view scan reports; F11 full screen (Esc to exit)
 - Native Windows WPF interface with high-DPI scaling, neon sunset styling, and local cached state
 
 No Python, API keys, game files, or account are required. This app tracks public project metadata; it does not run, provide, or download the game. PortWatch scores are editorial estimates, not independent gameplay benchmarks. Candidate repositories are unreviewed.
 
 The app caches the latest scan in `%LOCALAPPDATA%\PortWatchDesktop\state.json` and stores preferences in `settings.json` in the same folder. It displays the cache immediately on launch, then refreshes if auto-fetch is enabled. When auto-fetch is paused, F5 or Fetch Now refreshes on demand.
+
+Closing the window keeps it running in the notification area. Right-click the tray icon to fetch, toggle auto-fetch, reopen, or exit. Milestone alerts continue while the dashboard is hidden. Launching the executable again reopens the existing dashboard rather than starting a second monitor.
 
 ## Download
 

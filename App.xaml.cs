@@ -7,6 +7,11 @@ namespace PortwatchDesktop;
 
 public partial class App : Application
 {
+    private Mutex? instanceMutex;
+    private EventWaitHandle? showEvent;
+    private RegisteredWaitHandle? showRegistration;
+    private bool ownsMutex;
+
     private void OnStartup(object sender, StartupEventArgs e)
     {
         if (e.Args.Contains("--self-test"))
@@ -15,8 +20,11 @@ public partial class App : Application
             catch { Shutdown(1); }
             return;
         }
+        bool testMode=e.Args.Contains("--smoke-gui")||e.Args.Contains("--preview")||e.Args.Contains("--smoke-tray");
+        if(!testMode&&!ClaimInstance()){Shutdown(0);return;}
         var window = new MainWindow();
         MainWindow = window;
+        if(e.Args.Contains("--smoke-tray")){Shutdown(window.VerifyTray()?0:1);return;}
         if (e.Args.Contains("--smoke-gui") || e.Args.Contains("--preview"))
         {
             window.PreviewSample();
@@ -35,6 +43,31 @@ public partial class App : Application
             Shutdown(0);
             return;
         }
+        if(showEvent is not null)showRegistration=ThreadPool.RegisterWaitForSingleObject(showEvent,(_,_)=>{if(!Dispatcher.HasShutdownStarted)Dispatcher.BeginInvoke(new Action(window.ShowFromTray));},null,Timeout.Infinite,false);
         window.Show();
+    }
+
+    private bool ClaimInstance()
+    {
+        try
+        {
+            instanceMutex=new Mutex(true,@"Local\PortwatchDesktop.Instance",out ownsMutex);
+            if(!ownsMutex)
+            {
+                if(EventWaitHandle.TryOpenExisting(@"Local\PortwatchDesktop.Show",out var existing)){using(existing)existing.Set();}
+                return false;
+            }
+            showEvent=new EventWaitHandle(false,EventResetMode.AutoReset,@"Local\PortwatchDesktop.Show");
+        }
+        catch(UnauthorizedAccessException){showEvent?.Dispose();showEvent=null;}
+        catch(IOException){showEvent?.Dispose();showEvent=null;}
+        return true;
+    }
+
+    protected override void OnExit(ExitEventArgs e)
+    {
+        showRegistration?.Unregister(null);showEvent?.Dispose();
+        if(ownsMutex)instanceMutex?.ReleaseMutex();instanceMutex?.Dispose();
+        base.OnExit(e);
     }
 }
