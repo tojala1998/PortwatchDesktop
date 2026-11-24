@@ -6,6 +6,7 @@ A small, unofficial Windows desktop dashboard for following PortWatch VI's publi
 
 - Editorial leaderboard, milestone progress, and executable release timer
 - Responsive race track with the top 5–8 efforts mapped to the milestone scale; click markers to select projects
+- Compact Intelligence Brief synthesized locally from the tracker, milestone data, reported blockers, and recent GitHub activity (no external AI service or API key)
 - Fetch Now (F5) and adjustable 5–120 minute automatic refresh
 - Public GitHub commit, release, and README change monitoring
 - New public project candidates and repository links

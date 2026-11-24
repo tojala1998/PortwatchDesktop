@@ -224,7 +224,7 @@ public static class TrackerService
 
     public static async Task<ScanResult> Scan(JsonObject state,IProgress<string>? progress,CancellationToken token)
     {
-        var old=Object(state,"tracker");var tracker=(JsonObject)old.DeepClone();var errors=new List<string>();
+        string scanStarted=Now();var old=Object(state,"tracker");var tracker=(JsonObject)old.DeepClone();var errors=new List<string>();
         try{tracker=await GetTracker(token).ConfigureAwait(false);}catch(Exception e) when(e is not OperationCanceledException){errors.Add("PortWatch data: "+e.Message);}
         var changes=Compare(old,tracker);var live=(JsonObject)Object(state,"live").DeepClone();
         var efforts=Array(tracker,"efforts").Where(x=>x is not null&&ValidRepo(Text(x,"repo"))&&!Flag(x,"nuked")).ToList();
@@ -233,7 +233,7 @@ public static class TrackerService
         foreach(var r in await Task.WhenAll(tasks).ConfigureAwait(false)){live[r.Repo]=r.Live;changes.AddRange(r.Events);if(Text(r.Live,"error")!="")errors.Add(r.Repo+": "+Text(r.Live,"error"));}
         progress?.Report("Looking for newly created public projects…");var discovered=await Discover(tracker,Array(state,"local_candidates"),token).ConfigureAwait(false);changes.AddRange(discovered.Events);errors.AddRange(discovered.Errors);
         changes=changes.OrderByDescending(x=>Text(x,"time")).ToList();
-        var result=new JsonObject{["tracker"]=tracker,["live"]=live,["local_candidates"]=discovered.Candidates,["events"]=new JsonArray(changes.Cast<JsonNode?>().Concat(Array(state,"events").Select(x=>x?.DeepClone())).Take(250).ToArray()),["last_scan"]=Now(),["errors"]=new JsonArray(errors.Take(60).Select(x=>(JsonNode?)JsonValue.Create(x)).ToArray())};
+        var result=new JsonObject{["tracker"]=tracker,["live"]=live,["local_candidates"]=discovered.Candidates,["events"]=new JsonArray(changes.Cast<JsonNode?>().Concat(Array(state,"events").Select(x=>x?.DeepClone())).Take(250).ToArray()),["last_scan_started"]=scanStarted,["last_scan"]=Now(),["errors"]=new JsonArray(errors.Take(60).Select(x=>(JsonNode?)JsonValue.Create(x)).ToArray())};
         try{Save(StateFile,result);}catch(IOException e){((JsonArray)result["errors"]!).Add("Cache: "+e.Message);}
         return new(result,changes.Count,changes.Where(x=>Text(x,"kind")=="Milestone alert").Select(ToActivity).ToList());
     }
@@ -249,10 +249,46 @@ public static class TrackerService
     private static ActivityRow ToActivity(JsonNode? e)=>new(Stamp(Text(e,"time")),Text(e,"project"),Text(e,"kind"),Text(e,"detail"));
     public static IReadOnlyList<ActivityRow> Activities(JsonObject state)=>Array(state,"events").Select(ToActivity).ToList();
     public static IReadOnlyList<CandidateRow> Candidates(JsonObject state)=>Array(Object(state,"tracker"),"candidates").Concat(Array(state,"local_candidates")).Select(c=>new CandidateRow(Text(c,"repo"),Text(c,"source","PortWatch"),Text(c,"substance","—"),Stamp(Text(c,"foundAt")),Text(c,"description"))).ToList();
+
+    public static string IntelligenceBrief(JsonObject state,int maxWords=75)
+    {
+        var ranked=Projects(state,true).Where(p=>p.Rank!="—"&&p.Status!="Offline").ToList();
+        if(ranked.Count==0)return "Waiting for the first fetch. This brief summarizes the current leaders, milestone status, recent repository activity, and reported blockers.";
+        string Clean(string value)=>Regex.Replace(value.Trim(),@"\s+"," ");
+        string JoinNames(IEnumerable<string> source){var names=source.Select(Clean).Distinct().ToArray();return names.Length switch{0=>"",1=>names[0],2=>names[0]+" and "+names[1],_=>string.Join(", ",names[..^1])+", and "+names[^1]};}
+        var lead=ranked[0];var publicLead=ranked.FirstOrDefault(p=>ValidRepo(p.Repo)&&p.Status!="Unavailable");var sentences=new List<string>();
+        string stage=lead.Stage=="30 FPS"?"30 FPS in-game":lead.Stage.ToLowerInvariant();
+        sentences.Add($"{Clean(lead.Name)} leads at {lead.ScoreText} ({stage}){(!ValidRepo(lead.Repo)?", with no public repository listed":"")}.");
+        if(publicLead is not null&&publicLead.Name!=lead.Name)sentences.Add($"{Clean(publicLead.Name)} leads public efforts at {publicLead.ScoreText}.");
+        else if(ranked.Count>1)sentences.Add($"{Clean(ranked[1].Name)} follows at {ranked[1].ScoreText}.");
+        var stable=ranked.Where(p=>p.Stage=="Stable").ToList();var fast=ranked.Where(p=>p.Stage=="30 FPS").ToList();
+        if(stable.Count>0)sentences.Add($"PortWatch marks {JoinNames(stable.Take(2).Select(p=>p.Name))} stable.");
+        else if(fast.Count>0)sentences.Add($"PortWatch reports in-game 30 FPS for {JoinNames(fast.Take(2).Select(p=>p.Name))}; none is marked stable.");
+        else sentences.Add("No ranked effort is listed at 30 FPS in-game yet.");
+        var updated=ranked.Where(p=>p.Status=="Updated").Take(3).ToList();
+        var changed=new List<ProjectRow>();
+        if(DateTimeOffset.TryParse(Text(state,"last_scan_started"),out var started))
+        {
+            var namesChanged=Array(state,"events").Where(e=>Text(e,"kind")=="Score"&&DateTimeOffset.TryParse(Text(e,"time"),out var when)&&when>=started).Select(e=>Text(e,"project")).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            changed=ranked.Where(p=>namesChanged.Contains(p.Name)).Take(2).ToList();
+        }
+        if(changed.Count>0)sentences.Add("PortWatch updated scores for "+JoinNames(changed.Select(p=>$"{p.Name} ({p.ScoreText})"))+".");
+        else if(updated.Count>0)sentences.Add($"Latest scan detected updates to {JoinNames(updated.Select(p=>p.Name))}.");
+        var names=ranked.Take(4).Select(p=>p.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var blockers=string.Join(" ",Array(Object(state,"tracker"),"efforts").Where(e=>names.Contains(Text(e,"name"))).SelectMany(e=>Array(e,"blockers")).Select(v=>v?.ToString()??""));
+        var themes=new List<string>();
+        foreach(var (pattern,label) in new[]{("render|lighting|graphics|shader|texture|pipeline","rendering"),("crash|hang|watchdog|stability|black screen","GPU stability"),("slow|fps|performance|seconds per frame","performance"),("input|controller","input"),("memory|corrupt","memory")})
+            if(Regex.IsMatch(blockers,pattern,RegexOptions.IgnoreCase))themes.Add(label);
+        if(themes.Count>0)sentences.Add($"Reported hurdles include {JoinNames(themes.Take(3))}.");
+        var brief=new List<string>();int words=0;
+        foreach(string sentence in sentences){int n=sentence.Split(' ',StringSplitOptions.RemoveEmptyEntries).Length;if(words+n<=maxWords){brief.Add(sentence);words+=n;}}
+        return string.Join(" ",brief);
+    }
+
     public static string Report(JsonObject state)
     {
         var b=new StringBuilder("PORTWATCH DESKTOP — SCAN REPORT\n==============================================\n");
-        b.AppendLine($"Generated: {Stamp(Now())}\nLast scan: {Stamp(Text(state,"last_scan"))}\nPortWatch dataset: {Stamp(Text(Object(state,"tracker"),"updated"))}\nScores are editorial estimates, not independently verified benchmarks.\n\nLEADERBOARD\n-----------");
+        b.AppendLine($"Generated: {Stamp(Now())}\nLast scan: {Stamp(Text(state,"last_scan"))}\nPortWatch dataset: {Stamp(Text(Object(state,"tracker"),"updated"))}\nScores are editorial estimates, not independently verified benchmarks.\n\nINTELLIGENCE BRIEF\n------------------\n{IntelligenceBrief(state)}\n\nLEADERBOARD\n-----------");
         foreach(var p in Projects(state)){b.AppendLine($"{p.Name} — {p.ScoreText} | {p.Stage} | {p.Status}\n  Latest commit: {p.CommitTime} | {p.CommitTitle}");if(ValidRepo(p.Repo))b.AppendLine("  https://github.com/"+p.Repo);b.AppendLine("  "+p.Detail+"\n");}
         b.AppendLine("ACTIVITY\n--------");foreach(var a in Activities(state))b.AppendLine($"{a.Time} | {a.Project} | {a.Kind} | {a.Detail}");b.AppendLine("\nCANDIDATES (UNREVIEWED)\n-----------------------");foreach(var c in Candidates(state)){b.AppendLine($"{c.Repo} | {c.Source} | {c.Found}\n  {c.Description}");if(ValidRepo(c.Repo))b.AppendLine("  https://github.com/"+c.Repo);}
         b.AppendLine("\nSOURCE WARNINGS\n---------------");var warnings=Array(state,"errors");if(warnings.Count==0)b.AppendLine("No source warnings.");else foreach(var e in warnings)b.AppendLine(e?.ToString());return b.ToString();
@@ -265,5 +301,8 @@ public static class TrackerService
         var old=JsonNode.Parse("{\"efforts\":[{\"id\":\"x\",\"name\":\"X\",\"gta\":{\"loads\":1,\"boots\":1,\"menu\":1,\"ingame\":1,\"fps\":4}}]}")!.AsObject();
         var fresh=JsonNode.Parse("{\"efforts\":[{\"id\":\"x\",\"name\":\"X\",\"gta\":{\"loads\":1,\"boots\":1,\"menu\":1,\"ingame\":1,\"fps\":30,\"stability\":\"stable\"}}]}")!.AsObject();
         if(!Compare(old,fresh).Any(x=>Text(x,"kind")=="Milestone alert"))throw new Exception("Alert failed");if(!ValidRepo("owner/repo")||ValidRepo("../repo"))throw new Exception("Identifier failed");
+        var brief=IntelligenceBrief(JsonNode.Parse("""
+        {"tracker":{"efforts":[{"id":"a","name":"Alpha","tier":"tracked","gta":{"loads":1,"boots":1,"menu":1,"ingame":1,"fps":4}},{"id":"b","name":"Beta","repo":"example/beta","tier":"tracked","gta":{"loads":1,"boots":1,"menu":1,"ingame":0.8},"blockers":["Rendering is incomplete, GPU hangs"]}]},"live":{"example/beta":{"status":"Updated"}}}
+        """)!.AsObject());if(!brief.Contains("Beta leads public efforts at 67%")||!brief.Contains("No ranked effort is listed at 30 FPS")||brief.Split(' ',StringSplitOptions.RemoveEmptyEntries).Length>75)throw new Exception("Brief failed");
     }
 }

@@ -24,13 +24,14 @@ public partial class MainWindow : Window
     private WindowStyle previousStyle;
     private ResizeMode previousResize;
     private double leadPoints;
+    private bool compactDashboard;
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd,int attribute,ref int value,int size);
 
     public MainWindow()
     {
         InitializeComponent();
-        SizeChanged+=(_,_)=>{RaceTrack.Height=ActualHeight<900?96:120;};
+        SizeChanged+=(_,_)=>UpdateDashboardLayout();
         RaceTrack.ProjectSelected+=project=>{Tabs.SelectedIndex=0;var row=Leaderboard.Items.OfType<ProjectRow>().FirstOrDefault(x=>x.Name==project.Name&&x.Repo==project.Repo);if(row is not null){Leaderboard.SelectedItem=row;Leaderboard.ScrollIntoView(row);}};
         SourceInitialized+=(_,_)=>{try{int dark=1;DwmSetWindowAttribute(new WindowInteropHelper(this).Handle,20,ref dark,sizeof(int));}catch(DllNotFoundException){}catch(EntryPointNotFoundException){}};
         var settings=TrackerService.Load(TrackerService.SettingsFile);
@@ -46,6 +47,36 @@ public partial class MainWindow : Window
     }
 
     private int IntervalMinutes => Interval.SelectedIndex>=0&&Interval.SelectedIndex<intervals.Length?intervals[Interval.SelectedIndex]:15;
+
+    private void UpdateDashboardLayout()
+    {
+        double width=ActualWidth>0?ActualWidth:Width;
+        compactDashboard=width<1080;
+        RaceTrack.Height=ActualHeight<900?96:120;
+        if(compactDashboard)
+        {
+            DashboardLeft.Width=new GridLength(1,GridUnitType.Star);DashboardRight.Width=new GridLength(0);
+            Grid.SetColumn(BriefCard,0);Grid.SetRow(BriefCard,2);Grid.SetRowSpan(BriefCard,1);
+            LeadCards.Margin=new Thickness(0,0,0,12);RaceCard.Margin=new Thickness(0);BriefCard.Margin=new Thickness(0,12,0,0);
+            BriefText.MaxHeight=84;
+        }
+        else
+        {
+            DashboardLeft.Width=new GridLength(2.15,GridUnitType.Star);DashboardRight.Width=new GridLength(1,GridUnitType.Star);
+            Grid.SetColumn(BriefCard,1);Grid.SetRow(BriefCard,0);Grid.SetRowSpan(BriefCard,2);
+            LeadCards.Margin=new Thickness(0,0,8,12);RaceCard.Margin=new Thickness(0,0,8,0);BriefCard.Margin=new Thickness(8,0,0,0);
+            BriefText.MaxHeight=190;
+        }
+        UpdateBrief();
+    }
+
+    private void UpdateBrief()
+    {
+        double width=ActualWidth>0?ActualWidth:Width;
+        BriefText.Text=TrackerService.IntelligenceBrief(state,compactDashboard?45:width<1300?55:75);
+        var last=TrackerService.Text(state,"last_scan");
+        BriefSource.Text=last==""?"Local analysis · PortWatch + GitHub":$"Local analysis · last fetch {TrackerService.Stamp(last)}";
+    }
 
     internal void PreviewSample()
     {
@@ -70,6 +101,7 @@ public partial class MainWindow : Window
         var selected=(Leaderboard.SelectedItem as ProjectRow)?.Repo;
         var all=TrackerService.Projects(state,true);
         RaceTrack.SetProjects(all);
+        UpdateBrief();
         var projects=TrackerService.Projects(state,ShowWatchlist.IsChecked==true);
         Leaderboard.ItemsSource=projects;
         ActivityGrid.ItemsSource=TrackerService.Activities(state);
