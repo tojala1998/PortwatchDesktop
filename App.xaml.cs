@@ -21,13 +21,13 @@ public partial class App : Application
         {
             window.PreviewSample();
             var content = (FrameworkElement)window.Content;
-            content.Measure(new Size(1320, 820));
-            content.Arrange(new Rect(0, 0, 1320, 820));
+            content.Measure(new Size(1320, 880));
+            content.Arrange(new Rect(0, 0, 1320, 880));
             content.UpdateLayout();
             int preview = Array.IndexOf(e.Args, "--preview");
             if (preview >= 0 && preview + 1 < e.Args.Length)
             {
-                var bitmap = new RenderTargetBitmap(1320, 820, 96, 96, PixelFormats.Pbgra32);
+                var bitmap = new RenderTargetBitmap(1320, 880, 96, 96, PixelFormats.Pbgra32);
                 bitmap.Render(content);
                 var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
                 using var file = File.Create(e.Args[preview + 1]); encoder.Save(file);

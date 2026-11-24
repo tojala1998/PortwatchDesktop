@@ -7,6 +7,8 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using System.Windows.Interop;
+using System.Runtime.InteropServices;
 
 namespace PortwatchDesktop;
 
@@ -22,10 +24,15 @@ public partial class MainWindow : Window
     private WindowStyle previousStyle;
     private ResizeMode previousResize;
     private double leadPoints;
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd,int attribute,ref int value,int size);
 
     public MainWindow()
     {
         InitializeComponent();
+        SizeChanged+=(_,_)=>{RaceTrack.Height=ActualHeight<900?96:120;};
+        RaceTrack.ProjectSelected+=project=>{Tabs.SelectedIndex=0;var row=Leaderboard.Items.OfType<ProjectRow>().FirstOrDefault(x=>x.Name==project.Name&&x.Repo==project.Repo);if(row is not null){Leaderboard.SelectedItem=row;Leaderboard.ScrollIntoView(row);}};
+        SourceInitialized+=(_,_)=>{try{int dark=1;DwmSetWindowAttribute(new WindowInteropHelper(this).Handle,20,ref dark,sizeof(int));}catch(DllNotFoundException){}catch(EntryPointNotFoundException){}};
         var settings=TrackerService.Load(TrackerService.SettingsFile);
         int minutes=(int)TrackerService.Number(settings,"interval");if(!intervals.Contains(minutes))minutes=15;
         Interval.ItemsSource=intervals.Select(n=>$"{n} min").ToArray();
@@ -44,7 +51,10 @@ public partial class MainWindow : Window
     {
         state=JsonNode.Parse("""
         {"tracker":{"updated":"2026-11-24T13:29:00Z","exe":{"status":"released","releasedAt":"2026-11-23T14:36:00Z"},"efforts":[{"id":"a","name":"Example Alpha","tier":"tracked","repo":"example/alpha","gta":{"loads":1,"boots":1,"menu":1,"ingame":1,"fps":4},"summary":"Example project showing the dashboard layout and project details."},{"id":"b","name":"Example Beta","tier":"tracked","repo":"example/beta","gta":{"loads":1,"boots":1,"menu":1,"ingame":0.8}},{"id":"c","name":"Example Gamma","tier":"tracked","repo":"example/gamma","gta":{"loads":1,"boots":1,"menu":1,"ingame":0.5}},{"id":"d","name":"Example Delta","tier":"watchlist","repo":"example/delta","gta":{"loads":1,"boots":1}}]},"live":{"example/beta":{"status":"Updated","commit":{"title":"Improve graphics support and fix rendering issues","updated":"2026-11-24T13:10:00Z"}},"example/gamma":{"status":"Current","commit":{"title":"Update compatibility notes","updated":"2026-11-24T12:00:00Z"}}}}
-        """)!.AsObject();Render();
+        """)!.AsObject();
+        var examples=TrackerService.Array(TrackerService.Object(state,"tracker"),"efforts");
+        for(int i=0;i<5;i++)examples.Add(new JsonObject{["id"]=$"demo{i}",["name"]=$"Example {i+5}",["tier"]="tracked",["repo"]=$"example/demo{i}",["gta"]=new JsonObject{["loads"]=1,["boots"]=1,["menu"]=Math.Max(0,.5-i*.1)}});
+        Render();
     }
 
     private void SettingsChanged(object sender,RoutedEventArgs e)
@@ -59,6 +69,7 @@ public partial class MainWindow : Window
     {
         var selected=(Leaderboard.SelectedItem as ProjectRow)?.Repo;
         var all=TrackerService.Projects(state,true);
+        RaceTrack.SetProjects(all);
         var projects=TrackerService.Projects(state,ShowWatchlist.IsChecked==true);
         Leaderboard.ItemsSource=projects;
         ActivityGrid.ItemsSource=TrackerService.Activities(state);

@@ -5,6 +5,7 @@ A small, unofficial Windows desktop dashboard for following PortWatch VI's publi
 ## Features
 
 - Editorial leaderboard, milestone progress, and executable release timer
+- Responsive race track with the top 5–8 efforts mapped to the milestone scale; click markers to select projects
 - Fetch Now (F5) and adjustable 5–120 minute automatic refresh
 - Public GitHub commit, release, and README change monitoring
 - New public project candidates and repository links
@@ -13,6 +14,8 @@ A small, unofficial Windows desktop dashboard for following PortWatch VI's publi
 - Native Windows WPF interface with high-DPI scaling, neon sunset styling, and local cached state
 
 No Python, API keys, game files, or account are required. This app tracks public project metadata; it does not run, provide, or download the game. PortWatch scores are editorial estimates, not independent gameplay benchmarks. Candidate repositories are unreviewed.
+
+The app caches the latest scan in `%LOCALAPPDATA%\PortWatchDesktop\state.json` and stores preferences in `settings.json` in the same folder. It displays the cache immediately on launch, then refreshes if auto-fetch is enabled. When auto-fetch is paused, F5 or Fetch Now refreshes on demand.
 
 ## Download
 
