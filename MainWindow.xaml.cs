@@ -108,12 +108,12 @@ public partial class MainWindow : Window
         RaceTrack.Height=ActualHeight<900?96:120;
         if(compactDashboard)
         {
-            Grid.SetRow(NavHost,1);Grid.SetColumn(NavHost,0);Grid.SetColumnSpan(NavHost,3);NavHost.Margin=new Thickness(0,12,0,0);
+            SidebarColumn.Width=new GridLength(120);
             InspectorColumn.Width=new GridLength(0);Grid.SetColumn(ProjectInspector,0);Grid.SetRow(ProjectInspector,1);ProjectInspector.Margin=new Thickness(0,8,0,0);ProjectInspector.MaxHeight=160;
         }
         else
         {
-            Grid.SetRow(NavHost,0);Grid.SetColumn(NavHost,1);Grid.SetColumnSpan(NavHost,1);NavHost.Margin=new Thickness(12,0,12,0);
+            SidebarColumn.Width=new GridLength(142);
             InspectorColumn.Width=new GridLength(width>1600?370:320);Grid.SetColumn(ProjectInspector,1);Grid.SetRow(ProjectInspector,0);ProjectInspector.Margin=new Thickness(10,0,0,0);ProjectInspector.MaxHeight=double.PositiveInfinity;
         }
         if(compactDashboard)
@@ -186,7 +186,7 @@ public partial class MainWindow : Window
         if(leader is not null){LeaderName.Text=leader.Name;LeaderScore.Text=leader.ScoreText;LeaderMilestone.Text=leader.Stage+"  ·  PortWatch editorial estimate";leadPoints=leader.Score;}
         else{LeaderName.Text="Waiting for data";LeaderScore.Text="—%";LeaderMilestone.Text="Awaiting PortWatch data";leadPoints=0;}
         UpdateProgress();
-        Summary.Text=$"{all.Count(p=>!p.Dead)} active efforts  ·  {all.Count(p=>p.Dead)} dead  ·  PortWatch data: {TrackerService.Stamp(TrackerService.Text(TrackerService.Object(state,"tracker"),"updated"))}";
+        Summary.Text=$"{all.Count(p=>!p.Dead)} active\n{all.Count(p=>p.Dead)} dead\n\nPortWatch data\n{TrackerService.Stamp(TrackerService.Text(TrackerService.Object(state,"tracker"),"updated"))}";
         string last=TrackerService.Text(state,"last_scan");if(last!="")Status.Text=$"Last fetch: {TrackerService.Stamp(last)}  ·  {TrackerService.Array(state,"errors").Count} source warnings";
         UpdateReleaseTimer();
     }
