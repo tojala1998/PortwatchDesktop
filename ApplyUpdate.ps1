@@ -10,10 +10,26 @@ $backup = $null
 $failure = $null
 $originalExited = $false
 
+function Get-UpdateHash([string]$path) {
+    $stream = [IO.File]::OpenRead($path)
+    try {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try {
+            return [BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-', '')
+        } finally {
+            $sha.Dispose()
+        }
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 try {
     # Keep the single-instance gate alive while the original process and the updater overlap.
     $mutex = [Threading.Mutex]::new($false, 'Local\PortwatchDesktop.Instance')
-    $owner = Get-Process -Id ([int]$env:PORTWATCH_UPDATE_PARENT_ID) -ErrorAction SilentlyContinue
+    $owner = $null
+    try { $owner = [Diagnostics.Process]::GetProcessById([int]$env:PORTWATCH_UPDATE_PARENT_ID) }
+    catch [ArgumentException] {}
     if ($null -ne $owner) {
         try {
             if (!$owner.HasExited -and $owner.StartTime.ToUniversalTime().Ticks -eq [long]$env:PORTWATCH_UPDATE_PARENT_START) {
@@ -30,7 +46,7 @@ try {
     catch [Threading.AbandonedMutexException] { $ownsMutex = $true }
     if (!$ownsMutex) { throw 'Another Portwatch instance is running.' }
 
-    if ((Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash -ne $env:PORTWATCH_UPDATE_HASH) {
+    if ((Get-UpdateHash $asset) -ne $env:PORTWATCH_UPDATE_HASH) {
         throw 'The downloaded update failed its SHA-256 check.'
     }
 
@@ -88,7 +104,7 @@ if ($originalExited -and $env:PORTWATCH_UPDATE_RESTART -eq '1' -and [IO.File]::E
 if ($failure) {
     [Console]::Error.WriteLine($failure)
     if ($env:PORTWATCH_UPDATE_INTERACTIVE -eq '1') {
-        Add-Type -AssemblyName System.Windows.Forms
+        $null = [Reflection.Assembly]::Load('System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089')
         [void][Windows.Forms.MessageBox]::Show($failure, 'Portwatch update', 'OK', 'Warning')
     }
     exit 1
