@@ -12,18 +12,21 @@ public sealed class RaceTrackControl : FrameworkElement
     private readonly List<(Rect Bounds, ProjectRow Project)> hits = [];
     private IReadOnlyList<ProjectRow> projects = [];
     private ProjectRow? hovered;
+    private bool legacyScoring;
     public event Action<ProjectRow>? ProjectSelected;
 
     private static readonly Brush Text = BrushFrom("#FFF2EB"), Muted = BrushFrom("#C2AAC7"), Pink = BrushFrom("#FF8BB5"), Peach = BrushFrom("#FFC78C"), Track = BrushFrom("#382A48"), Pill = BrushFrom("#392B4C"), Outline = BrushFrom("#584567");
     private static readonly Brush[] Accents = [Pink, Peach, BrushFrom("#BFA4F5"), BrushFrom("#E1B2DC"), BrushFrom("#EEC59F"), BrushFrom("#BDA9D3"), BrushFrom("#DBA0BB"), BrushFrom("#D9C4A0")];
-    private static readonly (double Score,string Name,string Short)[] Milestones = [(0,"Groundwork","Start"),(25,"Exe runs","Exe"),(40,"First frame","Frame"),(55,"Main menu","Menu"),(70,"In-game","In-game"),(85,"30 FPS","30 FPS"),(100,"Stable","Stable")];
+    private static readonly (double Score,string Name,string Short)[] Milestones = [(0,"Groundwork","Start"),(10,"Exe runs","Exe"),(20,"First frame","Frame"),(30,"Main menu","Menu"),(40,"In the world","World"),(50,"Playable","Playable"),(100,"Complete","Complete")];
+    private static readonly (double Score,string Name,string Short)[] LegacyMilestones = [(0,"Groundwork","Start"),(25,"Exe runs","Exe"),(40,"First frame","Frame"),(55,"Main menu","Menu"),(70,"In-game","In-game"),(85,"30 FPS","30 FPS"),(100,"Stable","Stable")];
     private static readonly Brush Gradient = new LinearGradientBrush(Color.FromRgb(255,208,141),Color.FromRgb(201,89,209),new Point(0,0),new Point(1,0));
     private static Brush BrushFrom(string value)=>new SolidColorBrush((Color)ColorConverter.ConvertFromString(value));
 
     public RaceTrackControl(){Cursor=Cursors.Arrow;ToolTipService.SetInitialShowDelay(this,250);}
-    public void SetProjects(IEnumerable<ProjectRow> rows)
+    public void SetProjects(IEnumerable<ProjectRow> rows,bool legacy=false)
     {
-        projects=rows.Where(x=>x.Rank!="—"&&!x.Dead&&x.Status!="Offline").OrderByDescending(x=>x.Score).Take(8).ToList();
+        legacyScoring=legacy;
+        projects=rows.Where(x=>x.Tracked&&!x.Dead&&x.Status!="Offline").OrderByDescending(x=>x.Score).Take(8).ToList();
         InvalidateVisual();
     }
 
@@ -44,16 +47,17 @@ public sealed class RaceTrackControl : FrameworkElement
         if(highest>0){var fill=new Rect(left,barY,span*Math.Clamp(highest,0,100)/100,barH);dc.DrawRoundedRectangle(Gradient,null,fill,barH/2,barH/2);}
 
         double Anchor(double value)=>left+span*Math.Clamp(value,0,100)/100;
-        foreach(var milestone in Milestones)
+        foreach(var milestone in legacyScoring?LegacyMilestones:Milestones)
         {
             double x=Anchor(milestone.Score);
             if(milestone.Score is not (0 or 100))dc.DrawLine(new Pen(BrushFrom("#786585"),1),new Point(x,barY),new Point(x,barY+barH));
             var label=Format($"{milestone.Score:g}%",11,milestone.Score<=highest?Peach:Muted,true);
-            var title=Format(w<820?milestone.Short:milestone.Name,11,Muted);
+            var title=Format(w<1000?milestone.Short:milestone.Name,11,Muted);
             double labelX=Math.Clamp(x-label.Width/2,0,Math.Max(0,w-label.Width));
             double titleX=Math.Clamp(x-title.Width/2,0,Math.Max(0,w-title.Width));
             dc.DrawText(label,new Point(labelX,barY+barH+5));dc.DrawText(title,new Point(titleX,barY+barH+19));
         }
+        if(!legacyScoring&&w>520){var quality=Format("Story · Rendering · FPS · Stability",11,Muted);double center=Anchor(75);if(quality.Width<span*.42)dc.DrawText(quality,new Point(center-quality.Width/2,barY+barH+19));}
         if(count==0){var waiting=Format("Waiting for ranked project data",13,Muted);dc.DrawText(waiting,new Point(Math.Max(0,(w-waiting.Width)/2),24));return;}
 
         // Three short lanes prevent collisions, while connectors always end on the exact score.

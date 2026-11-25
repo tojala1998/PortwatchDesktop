@@ -22,10 +22,10 @@ internal sealed class SettingsWindow : Window
         auto=Check(fetch,"Automatically fetch updates",settings.AutoFetch);
         interval=Select(fetch,"Fetch interval",UserSettings.Intervals,settings.Interval," min");
         watchlist=Check(fetch,"Show watchlist in the leaderboard",settings.ShowWatchlist);
-        string[] hiddenDead=settings.HiddenDead;var restore=new Button{Content=$"Restore hidden dead projects ({hiddenDead.Length})",IsEnabled=hiddenDead.Length>0,HorizontalAlignment=HorizontalAlignment.Left,Margin=new Thickness(0,6,0,0)};restore.Click+=(_,_)=>{hiddenDead=[];restore.Content="Hidden projects restored on save";restore.IsEnabled=false;};fetch.Children.Add(restore);
+        string[] hiddenDead=settings.HiddenDead;var restore=new Button{Content=$"Restore hidden takedowns ({hiddenDead.Length})",IsEnabled=hiddenDead.Length>0,HorizontalAlignment=HorizontalAlignment.Left,Margin=new Thickness(0,6,0,0)};restore.Click+=(_,_)=>{hiddenDead=[];restore.Content="Hidden projects restored on save";restore.IsEnabled=false;};fetch.Children.Add(restore);
         var alerts=Section(stack,"NOTIFICATIONS");
         notifications=Check(alerts,"Enable milestone notifications",settings.Notifications);
-        fps=Check(alerts,"30 FPS in-game",settings.Notify30);stable=Check(alerts,"100% stable",settings.NotifyStable);sound=Check(alerts,"Play notification sound",settings.Sound);
+        fps=Check(alerts,"30 FPS in-game",settings.Notify30);stable=Check(alerts,"100% complete / stable",settings.NotifyStable);sound=Check(alerts,"Play notification sound",settings.Sound);
         duration=Select(alerts,"Popup duration",UserSettings.Durations,settings.Duration," sec");
         var behavior=Section(stack,"WINDOW BEHAVIOR");tray=Check(behavior,"Close to notification area (keep monitoring)",settings.CloseToTray);
         behavior.Children.Add(new TextBlock{Text="When disabled, closing the dashboard exits Portwatch.",TextWrapping=TextWrapping.Wrap,Foreground=(Brush)FindResource("Muted"),FontSize=12});

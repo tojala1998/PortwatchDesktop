@@ -32,6 +32,7 @@ public partial class MainWindow : Window
     private ResizeMode previousResize;
     private double leadPoints;
     private bool compactDashboard;
+    private StackPanel? qualityPanel;
     [DllImport("dwmapi.dll")]
     private static extern int DwmSetWindowAttribute(IntPtr hwnd,int attribute,ref int value,int size);
 
@@ -144,7 +145,7 @@ public partial class MainWindow : Window
     internal void PreviewSample()
     {
         state=JsonNode.Parse("""
-        {"tracker":{"updated":"2026-11-24T13:29:00Z","exe":{"status":"released","releasedAt":"2026-11-23T14:36:00Z"},"efforts":[{"id":"a","name":"Example Alpha","tier":"tracked","repo":"example/alpha","gta":{"loads":1,"boots":1,"menu":1,"ingame":1,"fps":4},"summary":"Example project showing the dashboard layout and project details."},{"id":"b","name":"Example Beta","tier":"tracked","repo":"example/beta","gta":{"loads":1,"boots":1,"menu":1,"ingame":0.8}},{"id":"c","name":"Example Gamma","tier":"tracked","repo":"example/gamma","gta":{"loads":1,"boots":1,"menu":1,"ingame":0.5}},{"id":"d","name":"Example Delta","tier":"watchlist","repo":"example/delta","gta":{"loads":1,"boots":1}}]},"live":{"example/beta":{"status":"Updated","commit":{"title":"Improve graphics support and fix rendering issues","updated":"2026-11-24T13:10:00Z"}},"example/gamma":{"status":"Current","commit":{"title":"Update compatibility notes","updated":"2026-11-24T12:00:00Z"}}}}
+        {"tracker":{"updated":"2026-11-24T13:29:00Z","exe":{"status":"released","releasedAt":"2026-11-23T14:36:00Z"},"efforts":[{"id":"a","name":"Example Alpha","tier":"tracked","repo":"example/alpha","gta":{"loads":1,"boots":1,"menu":1,"world":1,"playable":1,"render":0.8,"story":0,"fps":3,"stability":"unknown"},"summary":"Example project showing the dashboard layout and project details."},{"id":"b","name":"Example Beta","tier":"tracked","repo":"example/beta","gta":{"loads":1,"boots":1,"menu":1,"world":1,"playable":0}},{"id":"c","name":"Example Gamma","tier":"tracked","repo":"example/gamma","gta":{"loads":1,"boots":1,"menu":1,"world":0.5,"playable":0}},{"id":"d","name":"Example Delta","tier":"watchlist","repo":"example/delta","gta":{"loads":1,"boots":1}}]},"live":{"example/beta":{"status":"Updated","commit":{"title":"Improve graphics support and fix rendering issues","updated":"2026-11-24T13:10:00Z"}},"example/gamma":{"status":"Current","commit":{"title":"Update compatibility notes","updated":"2026-11-24T12:00:00Z"}}}}
         """)!.AsObject();
         var examples=TrackerService.Array(TrackerService.Object(state,"tracker"),"efforts");
         for(int i=0;i<5;i++)examples.Add(new JsonObject{["id"]=$"demo{i}",["name"]=$"Example {i+5}",["tier"]="tracked",["repo"]=$"example/demo{i}",["gta"]=new JsonObject{["loads"]=1,["boots"]=1,["menu"]=Math.Max(0,.5-i*.1)}});
@@ -167,22 +168,23 @@ public partial class MainWindow : Window
         developer=new DeveloperWindow(this,fetchLog,()=>_ = FetchAsync(),()=>TestNotification(false),()=>TestNotification(true),()=>TrackerService.Report(state),()=>fetchLog.Clear());developer.Closed+=(_,_)=>developer=null;developer.Show();
     }
     private void Log(string message){string line=$"[{DateTime.Now:HH:mm:ss}] {message}";fetchLog.Enqueue(line);while(fetchLog.Count>500)fetchLog.Dequeue();developer?.Append(line);}
-    private void TestNotification(bool stable){ShowNotifications([new ActivityRow("","Test project","Milestone alert",stable?"TEST · PortWatch reports 100% stable gameplay (30 FPS or higher).":"TEST · PortWatch reports 30 FPS in-game.")],true);}
+    private void TestNotification(bool stable){ShowNotifications([new ActivityRow("","Test project","Milestone alert",stable?"TEST · PortWatch reports 100% complete: story, rendering, 30 FPS and stability.":"TEST · PortWatch reports 30 FPS in-game.")],true);}
     internal bool VerifySettings(){var dialog=new SettingsWindow(this,settings);var d=new DeveloperWindow(this,fetchLog,()=>{},()=>{},()=>{},()=>"test",()=>{});return dialog.Content is not null&&d.Content is not null;}
 
     private void Render()
     {
-        var selected=(Leaderboard.SelectedItem as ProjectRow)?.Repo;
+        var selected=(Leaderboard.SelectedItem as ProjectRow)?.HideKey;
         var all=TrackerService.Projects(state,true);
-        RaceTrack.SetProjects(all);
+        bool legacy=TrackerService.UseLegacyScoring(TrackerService.Object(state,"tracker"));
+        RaceTrack.SetProjects(all,legacy);RaceHeading.Text=legacy?"THE RACE TO PLAYABLE":"THE RACE TO COMPLETION";
         UpdateBrief();
-        var projects=TrackerService.Projects(state,settings.ShowWatchlist).Where(p=>!p.Dead||!settings.HiddenDead.Contains(p.HideKey,StringComparer.OrdinalIgnoreCase)).ToList();
+        var projects=TrackerService.Projects(state,settings.ShowWatchlist).Where(p=>!p.CanHide||!settings.HiddenDead.Contains(p.HideKey,StringComparer.OrdinalIgnoreCase)).ToList();
         Leaderboard.ItemsSource=projects;
         ActivityGrid.ItemsSource=TrackerService.Activities(state);
         Candidates.ItemsSource=TrackerService.Candidates(state);
-        if(selected is not null)Leaderboard.SelectedItem=projects.FirstOrDefault(p=>p.Repo==selected);
+        if(selected is not null)Leaderboard.SelectedItem=projects.FirstOrDefault(p=>p.HideKey==selected);
         if(Leaderboard.SelectedItem is null&&projects.Count>0)Leaderboard.SelectedIndex=0;
-        var leader=all.FirstOrDefault(x=>x.Rank!="—"&&!x.Dead);
+        var leader=all.FirstOrDefault(x=>x.Tracked&&!x.Dead);
         if(leader is not null){LeaderName.Text=leader.Name;LeaderScore.Text=leader.ScoreText;LeaderMilestone.Text=leader.Stage+"  ·  PortWatch editorial estimate";leadPoints=leader.Score;}
         else{LeaderName.Text="Waiting for data";LeaderScore.Text="—%";LeaderMilestone.Text="Awaiting PortWatch data";leadPoints=0;}
         UpdateProgress();
@@ -237,11 +239,40 @@ public partial class MainWindow : Window
         if(ProjectDetail is null||ProjectTitle is null||ProjectMeta is null||ProjectCommit is null)return;
         if(Leaderboard.SelectedItem is ProjectRow row){ProjectTitle.Text=$"{row.DisplayName}  ·  {row.ScoreText}";ProjectMeta.Text=$"{row.Stage} · {row.Status} · {row.CommitTime}";ProjectDetail.Text=row.Detail;ProjectCommit.Text=row.CommitTitle;}
         else{ProjectTitle.Text="Select a project";ProjectMeta.Text="";ProjectDetail.Text="Select a project for details.";ProjectCommit.Text="—";}
-        if(RemoveDead is not null)RemoveDead.Visibility=Leaderboard.SelectedItem is ProjectRow {Dead:true}?Visibility.Visible:Visibility.Collapsed;
+        UpdateQualityInspector(Leaderboard.SelectedItem as ProjectRow);
+        if(RemoveDead is not null){RemoveDead.Content="Hide takedown";RemoveDead.Visibility=Leaderboard.SelectedItem is ProjectRow {CanHide:true}?Visibility.Visible:Visibility.Collapsed;}
+    }
+    private void UpdateQualityInspector(ProjectRow? row)
+    {
+        if(ProjectDetail.Parent is not StackPanel content)return;
+        if(qualityPanel is null){qualityPanel=new StackPanel{Margin=new Thickness(0,0,0,10)};content.Children.Insert(0,qualityPanel);}
+        qualityPanel.Children.Clear();
+        Brush ThemeBrush(string key)=>(Brush)FindResource(key);
+        void Note(string text,Brush brush){if(text!="")qualityPanel.Children.Add(new TextBlock{Text=text,Foreground=brush,FontSize=12,TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,0,0,6)});}
+        if(row is null)return;
+        Note(row.ParentBuild==""?"":$"Built on {row.ParentBuild}",ThemeBrush("Muted"));
+        Note(row.Evidence,ThemeBrush("Muted"));
+        Note(row.Takedown,ThemeBrush("Peach"));
+        if(row.Tracks is not {Count:>0} tracks)return;
+        Note("QUALITY TRACKS",ThemeBrush("Pink"));
+        var tiles=new Grid();tiles.ColumnDefinitions.Add(new ColumnDefinition());tiles.ColumnDefinitions.Add(new ColumnDefinition());tiles.RowDefinitions.Add(new RowDefinition{Height=GridLength.Auto});tiles.RowDefinitions.Add(new RowDefinition{Height=GridLength.Auto});
+        for(int i=0;i<tracks.Count;i++)
+        {
+            var track=tracks[i];var stack=new StackPanel();
+            stack.Children.Add(new TextBlock{Text=track.Label,FontSize=11,Foreground=ThemeBrush("Muted"),FontWeight=FontWeights.SemiBold});
+            stack.Children.Add(new TextBlock{Text=track.Detail,FontSize=12,Foreground=ThemeBrush("Text"),TextWrapping=TextWrapping.Wrap,Margin=new Thickness(0,3,0,6)});
+            var fill=new Border{Background=ThemeBrush("Sunset"),CornerRadius=new CornerRadius(3),HorizontalAlignment=HorizontalAlignment.Left,Width=0};
+            var bar=new Border{Height=6,Background=new SolidColorBrush((Color)ColorConverter.ConvertFromString("#443551")),CornerRadius=new CornerRadius(3),Child=fill};
+            bar.SizeChanged+=(_,_)=>fill.Width=bar.ActualWidth*Math.Clamp(track.Percent,0,100)/100;
+            stack.Children.Add(bar);
+            var tile=new Border{Background=new SolidColorBrush((Color)ColorConverter.ConvertFromString("#30243F")),CornerRadius=new CornerRadius(9),Padding=new Thickness(8),Margin=new Thickness(i%2==0?0:3,0,i%2==0?3:0,6),Child=stack};
+            Grid.SetRow(tile,i/2);Grid.SetColumn(tile,i%2);tiles.Children.Add(tile);
+        }
+        qualityPanel.Children.Add(tiles);
     }
     private void Navigation_Click(object sender,RoutedEventArgs e){Tabs.SelectedIndex=sender==NavActivity?1:sender==NavCandidates?2:0;}
     private void Tabs_SelectionChanged(object sender,SelectionChangedEventArgs e){if(e.Source!=Tabs||NavLeaderboard is null||NavActivity is null||NavCandidates is null)return;NavLeaderboard.IsChecked=Tabs.SelectedIndex==0;NavActivity.IsChecked=Tabs.SelectedIndex==1;NavCandidates.IsChecked=Tabs.SelectedIndex==2;}
-    private void RemoveDead_Click(object sender,RoutedEventArgs e){if(Leaderboard.SelectedItem is ProjectRow {Dead:true} row)ApplySettings(settings with{HiddenDead=settings.HiddenDead.Append(row.HideKey).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()});}
+    private void RemoveDead_Click(object sender,RoutedEventArgs e){if(Leaderboard.SelectedItem is ProjectRow {CanHide:true} row)ApplySettings(settings with{HiddenDead=settings.HiddenDead.Append(row.HideKey).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()});}
     private static void Open(string url){try{Process.Start(new ProcessStartInfo(url){UseShellExecute=true});}catch{MessageBox.Show("Unable to open the link.","Portwatch Desktop");}}
     private static void OpenRepo(string? repo){if(repo is not null&&TrackerService.ValidRepo(repo))Open("https://github.com/"+repo);}
     private void OpenProject_Click(object sender,RoutedEventArgs e)=>OpenRepo((Leaderboard.SelectedItem as ProjectRow)?.Repo);

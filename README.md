@@ -4,15 +4,16 @@ A small, unofficial Windows desktop dashboard for following PortWatch VI's publi
 
 ## Features
 
-- Editorial leaderboard, milestone progress, and executable release timer
+- Editorial leaderboard, updated 0–50% milestone ladder, four quality tracks through 100% completion, and executable release timer
 - Responsive race track with the top 5–8 efforts mapped to the milestone scale; click markers to select projects
+- Private builds are labelled and retain headline eligibility without taking a public rank; their public parent projects are shown in the selected-project inspector
 - Compact Intelligence Brief synthesized locally from the tracker, milestone data, reported blockers, and recent GitHub activity (no external AI service or API key)
 - Fetch Now (F5) and adjustable 5–120 minute automatic refresh
 - Public GitHub commit, release, and README change monitoring
-- Confirmed dead projects retain their score-sorted leaderboard positions, are struck through, and are excluded from the active race and fetches; hide them individually and restore them from Settings
+- Confirmed dead projects retain their score-sorted leaderboard positions, are struck through, and are excluded from the active race and fetches. Unresponsive repos show suspected (unconfirmed) takedown status; only projects with documented DMCA notices can be hidden, and hidden takedowns can be restored from Settings.
 - Release timer in the header, sidebar navigation, and a responsive side-by-side leaderboard and selected-project inspector
 - New public project candidates and repository links
-- Milestone alerts for 30 FPS in-game or stable gameplay
+- Milestone alerts for actual 30 FPS in playable gameplay or 100% completion under the new rubric; old cached datasets remain supported
 - Close the dashboard to the Windows notification area for passive monitoring; reopen or explicitly exit using the tray icon
 - Save and view scan reports; F11 full screen (Esc to exit)
 - Native Windows WPF interface with high-DPI scaling, neon sunset styling, and local cached state

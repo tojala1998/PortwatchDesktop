@@ -12,10 +12,12 @@ using System.Xml.Linq;
 
 namespace PortwatchDesktop;
 
-public sealed record ProjectRow(string Rank, string Name, string ScoreText, string Stage, string CommitTime, string Status, string CommitTitle, string Repo, string Detail, double Score, bool Dead=false)
+public sealed record QualityTrack(string Label,string Detail,double Percent);
+public sealed record ProjectRow(string Rank, string Name, string ScoreText, string Stage, string CommitTime, string Status, string CommitTitle, string Repo, string Detail, double Score, bool Dead=false, bool Has30Fps=false, bool Complete=false, IReadOnlyList<QualityTrack>? Tracks=null, string ParentBuild="", string Evidence="", string Takedown="", bool CanHide=false, bool Tracked=true)
 {
     public string DisplayName=>Dead?Name+" (Dead)":Name;
     public string HideKey=>Repo!=""?Repo:Name;
+    public string StatusTooltip=>Takedown!=""?Takedown:Status;
 }
 public sealed record CandidateRow(string Repo, string Source, string Substance, string Found, string Description);
 public sealed record ActivityRow(string Time, string Project, string Kind, string Detail);
@@ -38,31 +40,62 @@ public static class TrackerService
     public static JsonObject Object(JsonNode? node, string key) => node is JsonObject o && o[key] is JsonObject child ? child : new();
     public static JsonArray Array(JsonNode? node, string key) => node is JsonObject o && o[key] is JsonArray child ? child : new();
     public static bool Flag(JsonNode? node, string key, bool fallback = false) => bool.TryParse(Text(node,key),out var b) ? b : fallback;
-    public static bool IsDead(JsonNode? effort)=>effort is JsonObject obj&&(obj["nuked"] is JsonObject || Flag(effort,"nuked"));
+    private static JsonObject TakedownRecord(JsonNode? effort,JsonObject? tracker=null)
+    {
+        var direct=Object(Object(effort,"stats"),"dmca");string id=Text(effort,"id");
+        if(direct.Count>0||id==""||tracker is null)return direct;
+        return Array(tracker,"dmca").OfType<JsonObject>().Where(n=>Array(n,"tracked").Any(x=>x?.ToString()==id)).OrderByDescending(n=>Text(n,"date")).FirstOrDefault()??new();
+    }
+    public static bool IsDead(JsonNode? effort,JsonObject? tracker=null)=>effort is JsonObject obj&&(obj["nuked"] is JsonObject || Flag(effort,"nuked") || (Flag(Object(effort,"stats"),"missing")&&TakedownRecord(effort,tracker).Count>0));
     public static double Number(JsonNode? node, string key) => double.TryParse(Text(node,key),NumberStyles.Any,CultureInfo.InvariantCulture,out var n) ? n : Flag(node,key) ? 1 : 0;
     public static string Stamp(string value) => DateTimeOffset.TryParse(value,out var t) ? t.ToLocalTime().ToString("MMM dd HH:mm",CultureInfo.InvariantCulture) : "—";
     public static bool ValidRepo(string repo) => RepoPattern.IsMatch(repo) && !repo.Split('/').Any(x => x is "." or "..");
     public static string Now() => DateTimeOffset.UtcNow.ToString("o");
     private static double Clamp(double x) => double.IsFinite(x) ? Math.Clamp(x,0,1) : 0;
 
-    public static (double Points, string Stage) Score(JsonNode? effort)
+    private static bool HasNewMilestones(JsonNode? effort){var g=Object(effort,"gta");return new[]{"world","playable","story","render"}.Any(g.ContainsKey);}
+    public static bool UseLegacyScoring(JsonObject tracker)=>!Array(tracker,"efforts").Any(HasNewMilestones)&&Array(tracker,"efforts").Any(e=>Object(e,"gta").ContainsKey("ingame"));
+
+    public static (double Points, string Stage) Score(JsonNode? effort,bool? legacyModel=null)
     {
         var g = Object(effort,"groundwork"); var gta = Object(effort,"gta");
-        double points = 25*(.2*Clamp(Number(g,"loader"))+.28*Clamp(Number(g,"shaders"))+.32*Clamp(Number(g,"graphics"))+.2*Clamp(Number(g,"proven")));
+        bool legacy=legacyModel??(!HasNewMilestones(effort)&&gta.ContainsKey("ingame"));
+        double points = (legacy?25:10)*(.2*Clamp(Number(g,"loader"))+.28*Clamp(Number(g,"shaders"))+.32*Clamp(Number(g,"graphics"))+.2*Clamp(Number(g,"proven")));
         string stage = "Groundwork";
-        foreach (var (key,tick,label) in new (string,double,string)[]{("loads",25,"Exe runs"),("boots",40,"First frame"),("menu",55,"Main menu"),("ingame",70,"In-game")})
+        var ladder=legacy?new (string,double,string)[]{("loads",25,"Exe runs"),("boots",40,"First frame"),("menu",55,"Main menu"),("ingame",70,"In-game")} : new (string,double,string)[]{("loads",10,"Exe runs"),("boots",20,"First frame"),("menu",30,"Main menu"),("world",40,"In the world"),("playable",50,"Playable")};
+        foreach (var (key,tick,label) in ladder)
         {
             double v=Clamp(Number(gta,key));
             if (v == 1) { points=tick; stage=label; }
             else { points += v*(tick-points); break; }
         }
-        if (stage == "In-game")
+        if (legacy&&stage == "In-game")
         {
             double fps = Clamp(Number(gta,"fps")/30), stability=Stability.GetValueOrDefault(Text(gta,"stability"));
             points += 15*fps+15*stability;
             if(fps==1) stage = stability==1 ? "Stable" : "30 FPS";
         }
+        else if(!legacy&&stage=="Playable")
+        {
+            double quality=.35*Clamp(Number(gta,"story"))+.25*Clamp(Number(gta,"render"))+.2*Clamp(Number(gta,"fps")/30)+.2*Stability.GetValueOrDefault(Text(gta,"stability"));
+            points=50+50*quality;if(quality>=1)stage="Complete";
+        }
+        if(!legacy&&effort is JsonObject e&&e["manualScore"] is JsonValue manual&&manual.TryGetValue<double>(out double value)&&double.IsFinite(value))points=Math.Clamp(value,0,100);
         return (Math.Round(points,1,MidpointRounding.AwayFromZero),stage);
+    }
+
+    private static bool Reached30(JsonNode? effort,bool legacy){var stage=Score(effort,legacy).Stage;return legacy?stage is "30 FPS" or "Stable":(stage is "Playable" or "Complete")&&Number(Object(effort,"gta"),"fps")>=30;}
+    private static bool ReachedComplete(JsonNode? effort,bool legacy)=>Score(effort,legacy).Stage==(legacy?"Stable":"Complete");
+
+    private static IReadOnlyList<QualityTrack> QualityTracks(JsonNode? effort,bool legacy)
+    {
+        if(legacy||Score(effort,false).Stage is not ("Playable" or "Complete"))return [];
+        var g=Object(effort,"gta");double story=Clamp(Number(g,"story")),render=Clamp(Number(g,"render")),fps=Math.Max(0,Number(g,"fps"));string stability=Text(g,"stability","unknown");
+        static string Step(double v,(double Value,string Label)[] steps)=>steps.Last(s=>v>=s.Value).Label;
+        return [new("Story progress",Step(story,[(0,"Stuck in the opening"),(.1,"Prologue cleared"),(.25,"First missions"),(.4,"First act"),(.6,"Half the story"),(.85,"Main story to the credits"),(1,"100% completion")]),story*100),
+                new("Rendering",Step(render,[(0,"Black or broken"),(.25,"Shapes drawn, mostly unlit or black"),(.5,"Lit, but major effects missing"),(.75,"Close to the console, minor glitches"),(1,"Matches the console")]),render*100),
+                new("Performance",double.IsFinite(fps)&&fps>0?$"{fps:g} FPS":"Unknown",Clamp(fps/30)*100),
+                new("Stability",stability switch{"constant"=>"Crashes constantly","often"=>"Crashes often","sometimes"=>"Crashes sometimes","rarely"=>"Rarely crashes","stable"=>"Stable",_=>"Unknown"},Stability.GetValueOrDefault(stability)*100)];
     }
 
     public static (string Heading,string Clock,string Detail) ReleaseClock(JsonNode? exe, DateTimeOffset? now = null)
@@ -156,11 +189,11 @@ public static class TrackerService
             var prior=Object(current,kind);
             try
             {
-                var fresh=await ReadFeed("https://github.com/"+repo+endpoint,prior,token).ConfigureAwait(false);current[kind]=fresh;
+                var fresh=await ReadFeed("https://github.com/"+repo+endpoint,prior,token).ConfigureAwait(false);current[kind]=fresh;if(kind=="commit")current["commit_status"]=200;
                 if(Text(prior,"id")!=""&&Text(fresh,"id")!=""&&Text(prior,"id")!=Text(fresh,"id"))changes.Add(Event(name,kind=="commit"?"Commit":"Release",Text(fresh,"title","New activity")));
             }
             catch(HttpRequestException e) when(kind=="release"&&e.StatusCode==HttpStatusCode.NotFound){}
-            catch(Exception e) when(e is not OperationCanceledException){errors.Add(kind+": "+e.Message);}
+            catch(Exception e) when(e is not OperationCanceledException){if(kind=="commit")current["commit_status"]=e is HttpRequestException http&&http.StatusCode.HasValue?(int)http.StatusCode.Value:0;errors.Add(kind+": "+e.Message);}
         }
         string id=Text(Object(current,"commit"),"id");
         if(id!=""&&Text(current,"readme_commit")!=id)
@@ -181,6 +214,9 @@ public static class TrackerService
             }
             catch(Exception e) when(e is not OperationCanceledException){errors.Add("README: "+e.Message);}
         }
+        int oldStatus=(int)Number(previous,"commit_status"),newStatus=(int)Number(current,"commit_status");
+        if(newStatus is 404 or 451&&oldStatus!=newStatus)changes.Add(Event(name,"Repository unavailable",$"Not Responding, DMCA likely (HTTP {newStatus}; unconfirmed)."));
+        else if(oldStatus is 404 or 451&&newStatus==200)changes.Add(Event(name,"Repository restored","Repository commit feed responds again."));
         current["checked"]=Now();current["status"]=errors.Count>0?(id!=""?"Partial":"Unavailable"):(changes.Count>0?"Updated":"Current");current["error"]=string.Join("; ",errors);
         return new(repo,current,changes);
     }
@@ -188,14 +224,17 @@ public static class TrackerService
     private static List<JsonObject> Compare(JsonObject old,JsonObject tracker)
     {
         var changes=new List<JsonObject>();if(old.Count==0)return changes;
+        bool oldLegacy=UseLegacyScoring(old),legacy=UseLegacyScoring(tracker),modelChanged=oldLegacy!=legacy;
+        if(modelChanged)changes.Add(Event("PortWatch","Scoring model","PortWatch changed its milestone scoring rubric; scores recalculated without false milestone alerts."));
         var prior=Array(old,"efforts").Where(x=>x is JsonObject).GroupBy(x=>Text(x,"id")).ToDictionary(x=>x.Key,x=>x.First());
         foreach(var effort in Array(tracker,"efforts"))
         {
-            prior.TryGetValue(Text(effort,"id"),out var before);string name=Text(effort,"name","Project");var score=Score(effort);var was=Score(before);
-            if(before is null)changes.Add(Event(name,"New tracked project","Added by PortWatch"));else if(IsDead(before)!=IsDead(effort))changes.Add(Event(name,"Status",IsDead(effort)?"PortWatch marked project dead":"PortWatch restored project"));else if(score.Points!=was.Points)changes.Add(Event(name,"Score",$"PortWatch: {was.Points:g}% → {score.Points:g}%"));
-            if(IsDead(effort))continue;
-            if(score.Stage=="Stable"&&was.Stage!="Stable")changes.Add(Event(name,"Milestone alert","PortWatch reports 100% stable gameplay (30 FPS or higher)."));
-            else if(score.Stage=="30 FPS"&&was.Stage is not ("Stable" or "30 FPS"))changes.Add(Event(name,"Milestone alert","PortWatch reports 30 FPS in-game."));
+            prior.TryGetValue(Text(effort,"id"),out var before);string name=Text(effort,"name","Project");var score=Score(effort,legacy);var was=Score(before,oldLegacy);
+            if(before is null)changes.Add(Event(name,"New tracked project","Added by PortWatch"));else if(IsDead(before,old)!=IsDead(effort,tracker))changes.Add(Event(name,"Status",IsDead(effort,tracker)?"PortWatch marked project dead":"PortWatch restored project"));else if(!modelChanged&&score.Points!=was.Points)changes.Add(Event(name,"Score",$"PortWatch: {was.Points:g}% → {score.Points:g}%"));
+            var notice=TakedownRecord(effort,tracker);var oldNotice=TakedownRecord(before,old);if(before is not null&&notice.Count>0&&(Text(notice,"url")!=Text(oldNotice,"url")||Text(notice,"date")!=Text(oldNotice,"date")))changes.Add(Event(name,"Takedown",$"PortWatch recorded a DMCA notice ({Text(notice,"date","date unknown")})."));
+            if(IsDead(effort,tracker)||modelChanged)continue;
+            if(ReachedComplete(effort,legacy)&&!ReachedComplete(before,legacy))changes.Add(Event(name,"Milestone alert",legacy?"PortWatch reports 100% stable gameplay (30 FPS or higher).":"PortWatch reports 100% complete: story, rendering, 30 FPS and stability."));
+            else if(Reached30(effort,legacy)&&!Reached30(before,legacy))changes.Add(Event(name,"Milestone alert","PortWatch reports 30 FPS in-game."));
         }
         var previous=Array(old,"candidates").Select(x=>Text(x,"repo")).ToHashSet();
         foreach(var c in Array(tracker,"candidates"))if(!previous.Contains(Text(c,"repo")))changes.Add(Event(Text(c,"name",Text(c,"repo")),"New candidate","Discovered by PortWatch; unreviewed"));
@@ -232,7 +271,7 @@ public static class TrackerService
         string scanStarted=Now();var old=Object(state,"tracker");var tracker=(JsonObject)old.DeepClone();var errors=new List<string>();progress?.Report("Fetching PortWatch editorial data…");
         try{tracker=await GetTracker(token).ConfigureAwait(false);progress?.Report("PortWatch data received: "+Array(tracker,"efforts").Count+" efforts");}catch(Exception e) when(e is not OperationCanceledException){errors.Add("PortWatch data: "+e.Message);progress?.Report("PortWatch source unavailable; using cache");}
         var changes=Compare(old,tracker);var live=(JsonObject)Object(state,"live").DeepClone();
-        var efforts=Array(tracker,"efforts").Where(x=>x is not null&&ValidRepo(Text(x,"repo"))&&!IsDead(x)).ToList();
+        var efforts=Array(tracker,"efforts").Where(x=>x is not null&&ValidRepo(Text(x,"repo"))&&!IsDead(x,tracker)).ToList();
         int completed=0; progress?.Report($"Checking public repositories: 0/{efforts.Count}");using var gate=new SemaphoreSlim(4);
         var tasks=efforts.Select(async e=>{await gate.WaitAsync(token).ConfigureAwait(false);try{var result=await PollRepo(e!,Object(live,Text(e,"repo")),token).ConfigureAwait(false);progress?.Report($"{result.Repo}: {Text(result.Live,"status")} ({result.Events.Count} changes)");return result;}finally{gate.Release();progress?.Report($"Checking public repositories: {Interlocked.Increment(ref completed)}/{efforts.Count}");}}).ToArray();
         foreach(var r in await Task.WhenAll(tasks).ConfigureAwait(false)){live[r.Repo]=r.Live;changes.AddRange(r.Events);if(Text(r.Live,"error")!="")errors.Add(r.Repo+": "+Text(r.Live,"error"));}
@@ -245,11 +284,15 @@ public static class TrackerService
 
     public static IReadOnlyList<ProjectRow> Projects(JsonObject state,bool watchlist=true)
     {
-        var tracker=Object(state,"tracker");var live=Object(state,"live");int rank=0;
-        return Array(tracker,"efforts").OrderByDescending(x=>Score(x).Points).ThenByDescending(x=>Number(Object(x,"stats"),"stars")).Where(x=>watchlist||Text(x,"tier")=="tracked").Select(e=>{
-            string repo=Text(e,"repo");var score=Score(e);var record=Object(live,repo);var commit=Object(record,"commit");bool dead=IsDead(e);string r=Text(e,"tier")=="tracked"?(++rank).ToString():"—";
+        var tracker=Object(state,"tracker");var live=Object(state,"live");int rank=0;bool legacy=UseLegacyScoring(tracker);
+        return Array(tracker,"efforts").OrderByDescending(x=>Score(x,legacy).Points).ThenByDescending(x=>Number(Object(x,"stats"),"stars")).Where(x=>watchlist||Text(x,"tier")=="tracked").Select(e=>{
+            string repo=Text(e,"repo");var score=Score(e,legacy);var record=Object(live,repo);var commit=Object(record,"commit");bool dead=IsDead(e,tracker),tracked=Text(e,"tier")=="tracked";string r=tracked&&(legacy||ValidRepo(repo))?(++rank).ToString():"—";
             string detail=Text(e,"summary","No summary")+"  ·  "+Text(e,"verification","unverified");if(dead){var note=Text(Object(e,"nuked"),"note");if(note!="")detail+="  ·  "+note;}
-            return new ProjectRow(r,Text(e,"name",repo),$"{score.Points:g}%",score.Stage,Stamp(Text(commit,"updated",Text(Object(e,"stats"),"pushedAt"))),dead?"Dead":Text(record,"status",repo==""?"Private":"Not checked"),Text(commit,"title","—"),repo,detail,score.Points,dead);
+            var stats=Object(e,"stats");var notice=TakedownRecord(e,tracker);int liveStatus=(int)Number(record,"commit_status");bool missing=((dead||liveStatus!=200)&&Flag(stats,"missing"))||liveStatus is 404 or 451||(liveStatus==0&&Regex.IsMatch(Text(record,"error"),@"commit: [^;]*\b404\b"));
+            string takedown=notice.Count>0?$"Confirmed DMCA notice · {Text(notice,"date","Date unknown")}":missing?"Not Responding, DMCA likely (unconfirmed; repository access may have changed for other reasons)":"";
+            string status=notice.Count>0&&dead?"DMCA takedown":missing?"Not Responding":dead?"Dead":Text(record,"status",repo==""?"Private":"Not checked");
+            string parent=string.Join(", ",Array(e,"basedOn").Select(id=>{string key=id?.ToString()??"";return Text(Array(tracker,"efforts").FirstOrDefault(item=>Text(item,"id")==key),"name",key);}).Where(x=>x!=""));
+            return new ProjectRow(r,Text(e,"name",repo),$"{score.Points:g}%",score.Stage,Stamp(Text(commit,"updated",Text(stats,"pushedAt"))),status,Text(commit,"title","—"),repo,detail,score.Points,dead,Reached30(e,legacy),ReachedComplete(e,legacy),QualityTracks(e,legacy),parent,Text(e,"evidence"),takedown,notice.Count>0&&dead,tracked);
         }).ToList();
     }
     private static ActivityRow ToActivity(JsonNode? e)=>new(Stamp(Text(e,"time")),Text(e,"project"),Text(e,"kind"),Text(e,"detail"));
@@ -258,20 +301,20 @@ public static class TrackerService
 
     public static string IntelligenceBrief(JsonObject state,int maxWords=75)
     {
-        var ranked=Projects(state,true).Where(p=>p.Rank!="—"&&!p.Dead&&p.Status!="Offline").ToList();
+        var ranked=Projects(state,true).Where(p=>p.Tracked&&!p.Dead&&p.Status!="Offline").ToList();
         if(ranked.Count==0)return "Waiting for the first fetch. This brief summarizes the current leaders, milestone status, recent repository activity, and reported blockers.";
         string Clean(string value)=>Regex.Replace(value.Trim(),@"\s+"," ");
         string JoinNames(IEnumerable<string> source){var names=source.Select(Clean).Distinct().ToArray();return names.Length switch{0=>"",1=>names[0],2=>names[0]+" and "+names[1],_=>string.Join(", ",names[..^1])+", and "+names[^1]};}
-        var lead=ranked[0];var publicLead=ranked.FirstOrDefault(p=>ValidRepo(p.Repo)&&p.Status!="Unavailable");var sentences=new List<string>();
+        var lead=ranked[0];var publicLead=ranked.FirstOrDefault(p=>ValidRepo(p.Repo)&&p.Status is not ("Unavailable" or "Not Responding"));var sentences=new List<string>();
         string stage=lead.Stage=="30 FPS"?"30 FPS in-game":lead.Stage.ToLowerInvariant();
         sentences.Add($"{Clean(lead.Name)} leads at {lead.ScoreText} ({stage}){(!ValidRepo(lead.Repo)?", with no public repository listed":"")}.");
         if(publicLead is not null&&publicLead.Name!=lead.Name)sentences.Add($"{Clean(publicLead.Name)} leads public efforts at {publicLead.ScoreText}.");
         else if(ranked.Count>1)sentences.Add($"{Clean(ranked[1].Name)} follows at {ranked[1].ScoreText}.");
-        var tracker=Object(state,"tracker");var recentDead=Array(tracker,"efforts").Where(e=>IsDead(e)&&Text(e,"tier")=="tracked"&&(Score(e).Points>=20||Number(Object(e,"stats"),"stars")>=300)).Select(e=>(Effort:e,Marked:DeadTimestamp(e,tracker))).Where(x=>x.Marked.Date is DateTimeOffset date&&date>=DateTimeOffset.UtcNow.AddDays(-7)&&date<=DateTimeOffset.UtcNow.AddDays(1)).OrderByDescending(x=>Number(Object(x.Effort,"stats"),"stars")).ThenByDescending(x=>Score(x.Effort).Points).FirstOrDefault();
-        if(recentDead.Effort is not null)sentences.Add($"PortWatch reports {Clean(Text(recentDead.Effort,"name"))} went offline {recentDead.Marked.Label}.");
-        var stable=ranked.Where(p=>p.Stage=="Stable").ToList();var fast=ranked.Where(p=>p.Stage=="30 FPS").ToList();
-        if(stable.Count>0)sentences.Add($"PortWatch marks {JoinNames(stable.Take(2).Select(p=>p.Name))} stable.");
-        else if(fast.Count>0)sentences.Add($"PortWatch reports in-game 30 FPS for {JoinNames(fast.Take(2).Select(p=>p.Name))}; none is marked stable.");
+        var tracker=Object(state,"tracker");bool legacy=UseLegacyScoring(tracker);var recentDead=Array(tracker,"efforts").Where(e=>IsDead(e,tracker)&&Text(e,"tier")=="tracked"&&(Score(e,legacy).Points>=(legacy?20:10)||Number(Object(e,"stats"),"stars")>=300)).Select(e=>(Effort:e,Marked:DeadTimestamp(e,tracker))).Where(x=>x.Marked.Date is DateTimeOffset date&&date>=DateTimeOffset.UtcNow.AddDays(-7)&&date<=DateTimeOffset.UtcNow.AddDays(1)).OrderByDescending(x=>Number(Object(x.Effort,"stats"),"stars")).ThenByDescending(x=>Score(x.Effort,legacy).Points).FirstOrDefault();
+        if(recentDead.Effort is not null){var notice=TakedownRecord(recentDead.Effort,tracker);sentences.Add($"PortWatch reports {Clean(Text(recentDead.Effort,"name"))} went offline {recentDead.Marked.Label}{(notice.Count>0?"; DMCA notice dated "+Text(notice,"date","unknown date"):"")}.");}
+        var stable=ranked.Where(p=>p.Complete).ToList();var fast=ranked.Where(p=>p.Has30Fps).ToList();
+        if(stable.Count>0)sentences.Add($"PortWatch marks {JoinNames(stable.Take(2).Select(p=>p.Name))} {(legacy?"stable":"complete")}.");
+        else if(fast.Count>0)sentences.Add($"PortWatch reports in-game 30 FPS for {JoinNames(fast.Take(2).Select(p=>p.Name))}; none is marked {(legacy?"stable":"complete")}.");
         else sentences.Add("No ranked effort is listed at 30 FPS in-game yet.");
         var updated=ranked.Where(p=>p.Status=="Updated").Take(3).ToList();
         var changed=new List<ProjectRow>();
@@ -321,6 +364,7 @@ public static class TrackerService
             return(new DateTimeOffset(day.ToDateTime(TimeOnly.MinValue,DateTimeKind.Utc)),"on "+day.ToString("MMM d",CultureInfo.InvariantCulture));
         }
         if(DateTimeOffset.TryParse(raw,CultureInfo.InvariantCulture,DateTimeStyles.AssumeUniversal,out var timestamp))return(timestamp,"around "+LocalMoment(timestamp));
+        if(DateOnly.TryParseExact(Text(TakedownRecord(effort,tracker),"date"),"yyyy-MM-dd",CultureInfo.InvariantCulture,DateTimeStyles.None,out var noticeDay))return(new DateTimeOffset(noticeDay.ToDateTime(TimeOnly.MinValue,DateTimeKind.Utc)),"by "+noticeDay.ToString("MMM d",CultureInfo.InvariantCulture));
         return(null,"");
     }
 
@@ -328,16 +372,28 @@ public static class TrackerService
     {
         var b=new StringBuilder("PORTWATCH DESKTOP — SCAN REPORT\n==============================================\n");
         b.AppendLine($"Generated: {Stamp(Now())}\nLast scan: {Stamp(Text(state,"last_scan"))}\nPortWatch dataset: {Stamp(Text(Object(state,"tracker"),"updated"))}\nScores are editorial estimates, not independently verified benchmarks.\n\nINTELLIGENCE BRIEF\n------------------\n{IntelligenceBrief(state)}\n\nLEADERBOARD\n-----------");
-        foreach(var p in Projects(state)){b.AppendLine($"{p.Name} — {p.ScoreText} | {p.Stage} | {p.Status}\n  Latest commit: {p.CommitTime} | {p.CommitTitle}");if(ValidRepo(p.Repo))b.AppendLine("  https://github.com/"+p.Repo);b.AppendLine("  "+p.Detail+"\n");}
+        foreach(var p in Projects(state)){b.AppendLine($"{p.Name} - {p.ScoreText} | {p.Stage} | {p.Status}\n  Latest commit: {p.CommitTime} | {p.CommitTitle}");if(ValidRepo(p.Repo))b.AppendLine("  https://github.com/"+p.Repo);if(p.ParentBuild!="")b.AppendLine("  Built on: "+p.ParentBuild);if(p.Takedown!="")b.AppendLine("  "+p.Takedown);foreach(var track in p.Tracks??[])b.AppendLine($"  {track.Label}: {track.Detail} ({track.Percent:g}%)");b.AppendLine("  "+p.Detail+"\n");}
         b.AppendLine("ACTIVITY\n--------");foreach(var a in Activities(state))b.AppendLine($"{a.Time} | {a.Project} | {a.Kind} | {a.Detail}");b.AppendLine("\nCANDIDATES (UNREVIEWED)\n-----------------------");foreach(var c in Candidates(state)){b.AppendLine($"{c.Repo} | {c.Source} | {c.Found}\n  {c.Description}");if(ValidRepo(c.Repo))b.AppendLine("  https://github.com/"+c.Repo);}
         b.AppendLine("\nSOURCE WARNINGS\n---------------");var warnings=Array(state,"errors");if(warnings.Count==0)b.AppendLine("No source warnings.");else foreach(var e in warnings)b.AppendLine(e?.ToString());return b.ToString();
     }
 
     public static void SelfTest()
     {
+        var playable=JsonNode.Parse("""{"id":"x","name":"X","gta":{"loads":1,"boots":1,"menu":1,"world":1,"playable":1,"story":0,"render":0.8,"fps":3,"stability":"unknown"}}""")!.AsObject();
+        if(Score(playable)!=(61,"Playable"))throw new Exception("New playable score failed");
+        var tracks=QualityTracks(playable,false);if(tracks.Count!=4||tracks[0].Detail!="Stuck in the opening"||tracks[1].Detail!="Close to the console, minor glitches"||tracks[2].Detail!="3 FPS"||tracks[2].Percent!=10)throw new Exception("Quality tracks failed");
+        var world=JsonNode.Parse("""{"gta":{"loads":1,"boots":1,"menu":1,"world":0.5,"playable":0}}""");if(Score(world)!=(35,"Main menu")||QualityTracks(world,false).Count!=0)throw new Exception("New world rung failed");
+        var fast=(JsonObject)playable.DeepClone();fast["gta"]!["fps"]=30;if(!Reached30(fast,false)||ReachedComplete(fast,false))throw new Exception("30 FPS gate failed");
+        var complete=(JsonObject)fast.DeepClone();complete["gta"]!["story"]=1;complete["gta"]!["render"]=1;complete["gta"]!["stability"]="stable";if(Score(complete)!=(100,"Complete")||!ReachedComplete(complete,false))throw new Exception("Complete score failed");
+        var manual=JsonNode.Parse("""{"manualScore":64.3,"gta":{"loads":1,"boots":1,"menu":1,"world":1,"playable":1}}""");if(Score(manual)!=(64.3,"Playable"))throw new Exception("Manual override failed");
+        var missing=JsonNode.Parse("""{"tracker":{"efforts":[{"id":"x","name":"X","tier":"tracked","repo":"owner/x","stats":{"missing":true,"missingStatus":404},"gta":{"loads":1,"world":0}},{"name":"Y","tier":"tracked","repo":"owner/y","stats":{"missing":true,"dmca":{"date":"2026-11-24"}},"gta":{"loads":1,"world":0}}]}}""")!.AsObject();
+        var absent=Projects(missing).Single(x=>x.Name=="X");var taken=Projects(missing).Single(x=>x.Name=="Y");if(absent.Dead||absent.CanHide||!absent.Takedown.Contains("DMCA likely")||!taken.Dead||!taken.CanHide)throw new Exception("Takedown classification failed");
+        var rootNotice=JsonNode.Parse("""{"tracker":{"efforts":[{"id":"private","name":"Private","tier":"tracked","basedOn":["pub"],"gta":{"loads":1,"boots":1,"menu":1,"world":1,"playable":1}},{"id":"pub","name":"Public","repo":"owner/pub","tier":"tracked","stats":{"missing":true},"gta":{"loads":1,"world":0}}],"dmca":[{"date":"2026-11-24","tracked":["pub"]}]}}""")!.AsObject();var rootRows=Projects(rootNotice);if(rootRows[0].Rank!="—"||!rootRows[0].Tracked||rootRows[0].ParentBuild!="Public"||rootRows[1].Rank!="1"||!rootRows[1].CanHide)throw new Exception("Private ranking or root DMCA matching failed");
+        if(new UserSettings(Notify30:false,NotifyStable:true).Accepts(new("","X","Milestone alert","PortWatch reports 100% complete."))!=true)throw new Exception("Completion settings routing failed");
         var e=JsonNode.Parse("{\"gta\":{\"loads\":1,\"boots\":1,\"menu\":1,\"ingame\":0.8}}");if(Score(e)!=(67,"Main menu"))throw new Exception("Score failed");
         var exe=JsonNode.Parse("{\"status\":\"released\",\"releasedAt\":\"2026-11-23T14:36:00Z\"}");if(ReleaseClock(exe,DateTimeOffset.Parse("2026-11-24T15:36:01Z")).Clock!="01d  01h  00m  01s")throw new Exception("Timer failed");
         var old=JsonNode.Parse("{\"efforts\":[{\"id\":\"x\",\"name\":\"X\",\"gta\":{\"loads\":1,\"boots\":1,\"menu\":1,\"ingame\":1,\"fps\":4}}]}")!.AsObject();
+        var migrated=new JsonObject{["efforts"]=new JsonArray(complete.DeepClone())};var migrationEvents=Compare(old,migrated);if(migrationEvents.Any(x=>Text(x,"kind")=="Milestone alert")||!migrationEvents.Any(x=>Text(x,"kind")=="Scoring model"))throw new Exception("Schema transition alert failed");
         var fresh=JsonNode.Parse("{\"efforts\":[{\"id\":\"x\",\"name\":\"X\",\"gta\":{\"loads\":1,\"boots\":1,\"menu\":1,\"ingame\":1,\"fps\":30,\"stability\":\"stable\"}}]}")!.AsObject();
         if(!Compare(old,fresh).Any(x=>Text(x,"kind")=="Milestone alert"))throw new Exception("Alert failed");if(!ValidRepo("owner/repo")||ValidRepo("../repo"))throw new Exception("Identifier failed");
         var deadData=JsonNode.Parse("""{"tracker":{"efforts":[{"id":"gone","name":"Gone","repo":"owner/gone","tier":"tracked","nuked":{"at":"2026-11-23","note":"Deleted"},"gta":{"loads":1}}]}}""")!.AsObject();var deadRow=Projects(deadData).Single();if(!deadRow.Dead||deadRow.Rank!="1"||deadRow.Status!="Dead")throw new Exception("Dead project classification failed");
