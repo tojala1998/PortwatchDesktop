@@ -16,6 +16,7 @@ public sealed record QualityTrack(string Label,string Detail,double Percent);
 public sealed record ProjectRow(string Rank, string Name, string ScoreText, string Stage, string CommitTime, string Status, string CommitTitle, string Repo, string Detail, double Score, bool Dead=false, bool Has30Fps=false, bool Complete=false, IReadOnlyList<QualityTrack>? Tracks=null, string ParentBuild="", string Evidence="", string Takedown="", bool CanHide=false, bool Tracked=true)
 {
     public string DisplayName=>Dead?Name+" (Dead)":Name;
+    public bool IsPrivate=>string.IsNullOrWhiteSpace(Repo);
     public string HideKey=>Repo!=""?Repo:Name;
     public string StatusTooltip=>Takedown!=""?Takedown:Status;
 }
@@ -397,10 +398,13 @@ public static class TrackerService
             """)!.AsObject();
         var rootRows=Projects(rootNotice);
         if(!rootRows.Select(row=>row.Rank).SequenceEqual(new[]{"1","2","3"})||
-           !rootRows[0].Tracked||rootRows[0].ParentBuild!="Public"||!rootRows[2].CanHide||
+           !rootRows[0].Tracked||!rootRows[0].IsPrivate||rootRows[0].ParentBuild!="Public"||rootRows[2].IsPrivate||!rootRows[2].CanHide||
            !Projects(rootNotice,false).Select(row=>row.Rank).SequenceEqual(new[]{"1","3"}))
             throw new Exception("Leaderboard ranking or root DMCA matching failed");
         if(new UserSettings(Notify30:false,NotifyStable:true).Accepts(new("","X","Milestone alert","PortWatch reports 100% complete."))!=true)throw new Exception("Completion settings routing failed");
+        if(UserSettings.FromJson(new JsonObject { ["auto"]=true }).AutoUpdate||
+           !UserSettings.FromJson(new JsonObject { ["auto_update"]=true }).AutoUpdate)
+            throw new Exception("Automatic update preferences failed.");
         var e=JsonNode.Parse("{\"gta\":{\"loads\":1,\"boots\":1,\"menu\":1,\"ingame\":0.8}}");if(Score(e)!=(67,"Main menu"))throw new Exception("Score failed");
         var exe=JsonNode.Parse("{\"status\":\"released\",\"releasedAt\":\"2026-11-23T14:36:00Z\"}");if(ReleaseClock(exe,DateTimeOffset.Parse("2026-11-24T15:36:01Z")).Clock!="01d  01h  00m  01s")throw new Exception("Timer failed");
         var old=JsonNode.Parse("{\"efforts\":[{\"id\":\"x\",\"name\":\"X\",\"gta\":{\"loads\":1,\"boots\":1,\"menu\":1,\"ingame\":1,\"fps\":4}}]}")!.AsObject();

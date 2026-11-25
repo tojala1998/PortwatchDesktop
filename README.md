@@ -5,8 +5,8 @@ A small, unofficial Windows desktop dashboard for following PortWatch VI's publi
 ## Features
 
 - Editorial leaderboard, updated 0–50% milestone ladder, four quality tracks through 100% completion, and executable release timer
-- Responsive race track with the top 5–8 efforts mapped to the milestone scale; click markers to select projects
-- Private builds are labelled and retain headline eligibility without taking a public rank; their public parent projects are shown in the selected-project inspector
+- Responsive race track with up to eight efforts mapped to the milestone scale; click markers to select projects
+- Every project has a score-sorted rank. A lock beside the name identifies a private build, and the selected-project inspector shows any public parent projects
 - Compact Intelligence Brief synthesized locally from the tracker, milestone data, reported blockers, and recent GitHub activity (no external AI service or API key)
 - Fetch Now (F5) and adjustable 5–120 minute automatic refresh
 - Public GitHub commit, release, and README change monitoring
@@ -27,6 +27,8 @@ Closing the window keeps it running in the notification area. Right-click the tr
 ## Download
 
 Download either `PortwatchDesktop-Setup.exe` (per-user installation with Start menu and optional desktop/startup shortcuts) or `PortwatchDesktop-Portable.exe` (no installation) from Releases. Both self-contained builds need no separate .NET installation and share settings and cached data. The installer uses `%LOCALAPPDATA%\Programs\PortwatchDesktop` and can be removed through Windows Installed Apps.
+
+Use **Settings → Check for updates** to check GitHub and choose **Update and restart** when a newer stable version is available. **Install app updates automatically** is off by default. When enabled, Portwatch checks on startup and once a day, verifies the download, and installs it on exit. If the window closes to the notification area, choose **Exit Portwatch** from the tray to apply a downloaded update.
 
 Open Settings with the gear icon to configure automatic fetch, notification types, sound, duration, watchlist visibility, and close-to-tray behavior. Holding **Shift** while clicking the gear opens developer mode: test either milestone notification, watch session fetch logs, and copy diagnostics. Test notifications do not modify tracked milestones.
 

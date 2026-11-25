@@ -16,7 +16,7 @@ public partial class App : Application
     {
         if (e.Args.Contains("--self-test"))
         {
-            try { TrackerService.SelfTest(); Shutdown(0); }
+            try { TrackerService.SelfTest(); AppUpdateService.SelfTest(); Shutdown(0); }
             catch { Shutdown(1); }
             return;
         }

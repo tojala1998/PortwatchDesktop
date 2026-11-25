@@ -22,6 +22,11 @@ public partial class MainWindow : Window
     private DeveloperWindow? developer;
     private readonly DispatcherTimer timer = new() { Interval=TimeSpan.FromMilliseconds(250) };
     private readonly CancellationTokenSource closing = new();
+    private readonly AppUpdateService updates = new();
+    private CancellationTokenSource? automaticUpdateCheck;
+    private PreparedAppUpdate? stagedUpdate;
+    private DateTimeOffset nextUpdateCheck = DateTimeOffset.MinValue;
+    private bool settingsOpen, sessionEnding;
     private DateTimeOffset nextScan=DateTimeOffset.UtcNow;
     private bool busy, fullscreen, running, allowExit, trayHintShown;
     private Forms.NotifyIcon? trayIcon;
@@ -44,9 +49,19 @@ public partial class MainWindow : Window
         SourceInitialized+=(_,_)=>{try{int dark=1;DwmSetWindowAttribute(new WindowInteropHelper(this).Handle,20,ref dark,sizeof(int));}catch(DllNotFoundException){}catch(EntryPointNotFoundException){}};
         Render();ClockTick();
         Loaded+=(_,_)=>{if(running)return;running=true;InitializeTray();timer.Tick+=(_,_)=>ClockTick();timer.Start();};
-        Closing+=(_,e)=>{if(!allowExit&&settings.CloseToTray&&trayIcon is not null){e.Cancel=true;HideToTray();}};
-        Closed+=(_,_)=>{timer.Stop();closing.Cancel();DisposeTray();};
-        System.Windows.Application.Current.SessionEnding+=(_,_)=>{allowExit=true;DisposeTray();};
+        Closing+=(_,e)=>
+        {
+            if(!allowExit&&settings.CloseToTray&&trayIcon is not null)
+            {
+                e.Cancel=true;
+                HideToTray();
+                return;
+            }
+            if(!sessionEnding&&settings.AutoUpdate&&stagedUpdate is { } update)
+                StartAppUpdate(update, restart:false);
+        };
+        Closed+=(_,_)=>{timer.Stop();closing.Cancel();stagedUpdate?.Discard();DisposeTray();};
+        System.Windows.Application.Current.SessionEnding+=(_,_)=>{sessionEnding=true;allowExit=true;DisposeTray();};
     }
 
     private int IntervalMinutes => settings.Interval;
@@ -155,13 +170,93 @@ public partial class MainWindow : Window
     private void ApplySettings(UserSettings updated)
     {
         bool scheduleChanged=settings.AutoFetch!=updated.AutoFetch||settings.Interval!=updated.Interval;
+        if (updated.AutoUpdate != settings.AutoUpdate)
+        {
+            if (updated.AutoUpdate) nextUpdateCheck = DateTimeOffset.MinValue;
+            else
+            {
+                automaticUpdateCheck?.Cancel();
+                stagedUpdate?.Discard();
+                stagedUpdate = null;
+            }
+        }
         settings=updated;
         if(scheduleChanged)nextScan=DateTimeOffset.UtcNow.AddMinutes(IntervalMinutes);
         try{settings.Save();}catch(Exception e) when(e is IOException or UnauthorizedAccessException){MessageBox.Show(this,"Could not save settings: "+e.Message,"Portwatch Desktop");}
         Render();ClockTick();
     }
     private void SettingsButton_Click(object sender,RoutedEventArgs e){if((Keyboard.Modifiers&ModifierKeys.Shift)!=0)OpenDeveloper();else OpenSettings();}
-    private void OpenSettings(){var dialog=new SettingsWindow(this,settings);if(dialog.ShowDialog()==true&&dialog.Result is not null)ApplySettings(dialog.Result);}
+    private void OpenSettings()
+    {
+        if (settingsOpen) return;
+        settingsOpen = true;
+        if (automaticUpdateCheck is not null)
+        {
+            automaticUpdateCheck.Cancel();
+            nextUpdateCheck = DateTimeOffset.MinValue;
+        }
+        try
+        {
+            var dialog = new SettingsWindow(this, settings, updates, stagedUpdate);
+            if (dialog.ShowDialog() != true) return;
+            if (dialog.Result is { } preferences) ApplySettings(preferences);
+            if (dialog.RequestedUpdate is { } update && StartAppUpdate(update, restart:true))
+            {
+                allowExit = true;
+                Close();
+            }
+        }
+        finally { settingsOpen = false; }
+    }
+
+    private async Task CheckForAutomaticUpdateAsync()
+    {
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(closing.Token);
+        automaticUpdateCheck = cancellation;
+        nextUpdateCheck = DateTimeOffset.UtcNow.AddDays(1);
+        try
+        {
+            var release = await updates.CheckAsync(cancellation.Token);
+            if (release is null || cancellation.IsCancellationRequested) return;
+            var prepared = await updates.PrepareAsync(release, cancellation.Token);
+            if (cancellation.IsCancellationRequested)
+            {
+                prepared.Discard();
+                return;
+            }
+            stagedUpdate = prepared;
+            string message = $"Portwatch {release.Version} will install when you exit.";
+            Status.Text = message;
+            Log(message);
+            trayIcon?.ShowBalloonTip(5000, "Portwatch update ready", message, Forms.ToolTipIcon.Info);
+        }
+        catch (Exception error) when (AppUpdateService.IsUpdateError(error))
+        {
+            if (!cancellation.IsCancellationRequested)
+            {
+                nextUpdateCheck = DateTimeOffset.UtcNow.AddHours(1);
+                Log($"App update: {error.Message}");
+            }
+        }
+        finally { automaticUpdateCheck = null; }
+    }
+
+    private bool StartAppUpdate(PreparedAppUpdate update, bool restart)
+    {
+        try
+        {
+            updates.StartInstall(update, restart);
+            if (stagedUpdate != update) stagedUpdate?.Discard();
+            stagedUpdate = null;
+            return true;
+        }
+        catch (Exception error) when (AppUpdateService.IsUpdateError(error))
+        {
+            if (stagedUpdate != update) update.Discard();
+            MessageBox.Show(this, $"Couldn’t start the update. {error.Message}", "Portwatch update", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+    }
     private void OpenDeveloper()
     {
         if(developer is not null){developer.Activate();return;}
@@ -169,7 +264,7 @@ public partial class MainWindow : Window
     }
     private void Log(string message){string line=$"[{DateTime.Now:HH:mm:ss}] {message}";fetchLog.Enqueue(line);while(fetchLog.Count>500)fetchLog.Dequeue();developer?.Append(line);}
     private void TestNotification(bool stable){ShowNotifications([new ActivityRow("","Test project","Milestone alert",stable?"TEST · PortWatch reports 100% complete: story, rendering, 30 FPS and stability.":"TEST · PortWatch reports 30 FPS in-game.")],true);}
-    internal bool VerifySettings(){var dialog=new SettingsWindow(this,settings);var d=new DeveloperWindow(this,fetchLog,()=>{},()=>{},()=>{},()=>"test",()=>{});return dialog.Content is not null&&d.Content is not null;}
+    internal bool VerifySettings(){var dialog=new SettingsWindow(this,settings,updates);var d=new DeveloperWindow(this,fetchLog,()=>{},()=>{},()=>{},()=>"test",()=>{});return dialog.Content is not null&&d.Content is not null;}
 
     private void Render()
     {
@@ -205,6 +300,8 @@ public partial class MainWindow : Window
         if(trayAuto is not null)trayAuto.Checked=settings.AutoFetch;
         if(trayStatus is not null)trayStatus.Text=NextScan.Text;
         if(running&&!busy&&settings.AutoFetch&&DateTimeOffset.UtcNow>=nextScan)_=FetchAsync();
+        if(running&&!sessionEnding&&!settingsOpen&&settings.AutoUpdate&&automaticUpdateCheck is null&&stagedUpdate is null&&DateTimeOffset.UtcNow>=nextUpdateCheck)
+            _=CheckForAutomaticUpdateAsync();
     }
     private async Task FetchAsync()
     {

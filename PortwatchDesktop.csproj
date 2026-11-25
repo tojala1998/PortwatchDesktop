@@ -8,9 +8,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>PortwatchDesktop</AssemblyName>
     <RootNamespace>PortwatchDesktop</RootNamespace>
-    <Version>2.2.1</Version>
+    <Version>2.2.2</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>portwatch.ico</ApplicationIcon>
   </PropertyGroup>
   <ItemGroup><Using Remove="System.Windows.Forms"/><Using Remove="System.Drawing"/><Resource Include="portwatch.ico"/></ItemGroup>
+  <ItemGroup><EmbeddedResource Include="ApplyUpdate.ps1" LogicalName="PortwatchDesktop.ApplyUpdate.ps1"/></ItemGroup>
 </Project>

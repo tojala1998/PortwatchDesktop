@@ -33,6 +33,9 @@ jobs:
           & $iscc "/DAppVersion=$($project.Project.PropertyGroup.Version)" installer/PortwatchDesktop.iss
           if ($LASTEXITCODE -ne 0) { throw 'Installer compilation failed' }
           Copy-Item artifacts/PortwatchDesktop.exe artifacts/PortwatchDesktop-Portable.exe
+      - name: Verify updater
+        shell: pwsh
+        run: ./tools/verify-update.ps1 -Installer ./artifacts/PortwatchDesktop-Setup.exe -Portable ./artifacts/PortwatchDesktop-Portable.exe
       - name: Upload executables
         uses: actions/upload-artifact@v4
         with:
