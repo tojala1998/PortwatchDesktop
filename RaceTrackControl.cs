@@ -36,12 +36,10 @@ public sealed class RaceTrackControl : FrameworkElement
     protected override void OnRender(DrawingContext dc)
     {
         base.OnRender(dc);hits.Clear();double w=ActualWidth,h=ActualHeight;
-        if(w<120||h<65)return;
+        if(w<120||h<78)return;
         dc.DrawRectangle(Brushes.Transparent,null,new Rect(0,0,w,h));
-        int laneCount=h<110?2:3;
-        double left=12,right=w-12,span=right-left,barY=laneCount*22+5,barH=13;
-        int count=Math.Min(projects.Count,w<780?5:w<1060?6:w<1390?7:8);
-        double highest=count>0?projects[0].Score:0;
+        double left=12,right=w-12,span=right-left,barY=Math.Clamp(h-48,30,60),barH=13;
+        double highest=projects.Count>0?projects[0].Score:0;
         var range=new Rect(left,barY,span,barH);
         dc.DrawRoundedRectangle(Track,null,range,barH/2,barH/2);
         if(highest>0){var fill=new Rect(left,barY,span*Math.Clamp(highest,0,100)/100,barH);dc.DrawRoundedRectangle(Gradient,null,fill,barH/2,barH/2);}
@@ -58,48 +56,77 @@ public sealed class RaceTrackControl : FrameworkElement
             dc.DrawText(label,new Point(labelX,barY+barH+5));dc.DrawText(title,new Point(titleX,barY+barH+19));
         }
         if(!legacyScoring&&w>520){var quality=Format("Story · Rendering · FPS · Stability",11,Muted);double center=Anchor(75);if(quality.Width<span*.42)dc.DrawText(quality,new Point(center-quality.Width/2,barY+barH+19));}
-        if(count==0){var waiting=Format("Waiting for ranked project data",13,Muted);dc.DrawText(waiting,new Point(Math.Max(0,(w-waiting.Width)/2),24));return;}
+        if(projects.Count==0){var waiting=Format("Waiting for ranked project data",13,Muted);dc.DrawText(waiting,new Point(Math.Max(0,(w-waiting.Width)/2),8));return;}
 
-        // Three short lanes prevent collisions, while connectors always end on the exact score.
-        var occupied=Enumerable.Range(0,laneCount).Select(_=>new List<Rect>()).ToArray();
-        var markers=new List<(ProjectRow Project,Rect Label,FormattedText Text,double Anchor,Brush Accent)>();
-        const double labelH=20, laneSpacing=22, gap=5;
-        for(int i=0;i<count;i++)
+        const double labelHeight = 22, labelGap = 6, labelInset = 4, labelPadding = 8;
+        double labelY = 3 + Math.Max(0, h - 96) / 2;
+        double available = w - 2 * labelInset;
+        int maxNameLength = w < 850 ? 12 : 18;
+        var markers = new List<(ProjectRow Project, FormattedText Text, double Anchor, double Width, Brush Accent)>();
+        for (int i = 0; i < projects.Count; i++)
         {
-            var p=projects[i]; double x=Anchor(p.Score); Brush accent=Accents[i];
-            string name=p.Name.Length>(w<850?12:18)?p.Name[..(w<850?11:17)]+"…":p.Name;
-            var text=Format($"{name}  {p.ScoreText}",11, i==0?Peach:Text,true);
-            double labelW=Math.Min(w-4,text.Width+16), ideal=Math.Clamp(x-labelW/2,2,w-labelW-2);
-            (int Lane,double X,double Cost) best=(-1,ideal,double.PositiveInfinity);
-            for(int lane=0;lane<occupied.Length;lane++)
-            {
-                var positions=new List<double>{ideal,2,w-labelW-2};
-                foreach(Rect r in occupied[lane]){positions.Add(r.Right+gap);positions.Add(r.Left-labelW-gap);}
-                foreach(double proposed in positions)
-                {
-                    double px=Math.Clamp(proposed,2,w-labelW-2);var proposal=new Rect(px,lane*laneSpacing,labelW,labelH);
-                    if(occupied[lane].Any(r=>proposal.Left<r.Right+gap&&proposal.Right>r.Left-gap))continue;
-                    double cost=Math.Abs(px-ideal)+lane*9;
-                    if(cost<best.Cost)best=(lane,px,cost);
-                }
-            }
-            if(best.Lane<0)continue; // only possible at unusually tiny widths
-            var rect=new Rect(best.X,best.Lane*laneSpacing,labelW,labelH);occupied[best.Lane].Add(rect);
-            markers.Add((p,rect,text,x,accent));
+            var project = projects[i];
+            string name = project.Name.Length > maxNameLength ? project.Name[..(maxNameLength - 1)] + "…" : project.Name;
+            var text = Format($"{name}  {project.ScoreText}", 11, i == 0 ? Peach : Text, true);
+            text.MaxTextWidth = w - 2 * (labelInset + labelPadding);
+            text.MaxLineCount = 1;
+            text.Trimming = TextTrimming.CharacterEllipsis;
+            double labelWidth = text.Width + 2 * labelPadding;
+            if (labelWidth > available) break;
+            markers.Add((project, text, Anchor(project.Score), labelWidth, Accents[i]));
+            available -= labelWidth + labelGap;
         }
-        foreach(var marker in markers)
+
+        // Keep the labels in the same order as their score anchors so the connectors cannot cross.
+        markers.Reverse();
+        var positions = PlaceLabels(markers.Select(marker => (marker.Anchor, marker.Width)).ToArray(), labelInset, labelGap, Math.Max(0, available + labelGap));
+        double anchorY = barY + barH / 2;
+        dc.PushOpacity(.65);
+        for (int i = 0; i < markers.Count; i++)
         {
-            var center=new Point(marker.Label.X+marker.Label.Width/2,marker.Label.Bottom);
-            dc.DrawLine(new Pen(marker.Accent,1),center,new Point(marker.Anchor,barY+barH/2));
-            dc.DrawEllipse(marker.Accent,null,new Point(marker.Anchor,barY+barH/2),3.3,3.3);
+            var marker = markers[i];
+            var start = new Point(positions[i] + marker.Width / 2, labelY + labelHeight);
+            dc.DrawLine(new Pen(marker.Accent, 1), start, new Point(marker.Anchor, anchorY));
         }
-        foreach(var marker in markers)
+        dc.Pop();
+
+        for (int i = 0; i < markers.Count; i++)
         {
-            bool leader=marker.Project==projects[0];
-            dc.DrawRoundedRectangle(Pill,new Pen(leader?Peach:Outline,leader?1.3:1),marker.Label,9,9);
-            dc.DrawText(marker.Text,new Point(marker.Label.X+(marker.Label.Width-marker.Text.Width)/2,marker.Label.Y+(labelH-marker.Text.Height)/2));
-            hits.Add((marker.Label,marker.Project));
+            var marker = markers[i];
+            bool leader = marker.Project == projects[0];
+            var bounds = new Rect(positions[i], labelY, marker.Width, labelHeight);
+            double dotRadius = leader ? 3.5 : 2.7;
+            dc.DrawEllipse(marker.Accent, null, new Point(marker.Anchor, anchorY), dotRadius, dotRadius);
+            dc.DrawRoundedRectangle(Pill, new Pen(leader ? Peach : Outline, leader ? 1.3 : 1), bounds, 9, 9);
+            dc.DrawText(marker.Text, new Point(bounds.X + labelPadding, bounds.Y + (labelHeight - marker.Text.Height) / 2));
+            hits.Add((bounds, marker.Project));
         }
+    }
+
+    private static double[] PlaceLabels(IReadOnlyList<(double Anchor, double Width)> markers, double inset, double gap, double slack)
+    {
+        var positions = new double[markers.Count];
+        var preferredOffsets = new double[markers.Count];
+        var rightwardOffsets = new double[markers.Count];
+        double packedPosition = inset, rightwardOffset = 0;
+        for (int i = 0; i < markers.Count; i++)
+        {
+            var (anchor, width) = markers[i];
+            positions[i] = packedPosition;
+            preferredOffsets[i] = Math.Clamp(anchor - width / 2 - packedPosition, 0, slack);
+            rightwardOffset = Math.Max(rightwardOffset, preferredOffsets[i]);
+            rightwardOffsets[i] = rightwardOffset;
+            packedPosition += width + gap;
+        }
+
+        // Average the two passes to center crowded groups without reducing the gaps between labels.
+        double leftwardOffset = slack;
+        for (int i = markers.Count - 1; i >= 0; i--)
+        {
+            leftwardOffset = Math.Min(leftwardOffset, preferredOffsets[i]);
+            positions[i] += (leftwardOffset + rightwardOffsets[i]) / 2;
+        }
+        return positions;
     }
 
     protected override void OnMouseMove(MouseEventArgs e)

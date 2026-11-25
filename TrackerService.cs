@@ -284,16 +284,16 @@ public static class TrackerService
 
     public static IReadOnlyList<ProjectRow> Projects(JsonObject state,bool watchlist=true)
     {
-        var tracker=Object(state,"tracker");var live=Object(state,"live");int rank=0;bool legacy=UseLegacyScoring(tracker);
-        return Array(tracker,"efforts").OrderByDescending(x=>Score(x,legacy).Points).ThenByDescending(x=>Number(Object(x,"stats"),"stars")).Where(x=>watchlist||Text(x,"tier")=="tracked").Select(e=>{
-            string repo=Text(e,"repo");var score=Score(e,legacy);var record=Object(live,repo);var commit=Object(record,"commit");bool dead=IsDead(e,tracker),tracked=Text(e,"tier")=="tracked";string r=tracked&&(legacy||ValidRepo(repo))?(++rank).ToString():"—";
+        var tracker=Object(state,"tracker");var live=Object(state,"live");bool legacy=UseLegacyScoring(tracker);
+        return Array(tracker,"efforts").OrderByDescending(x=>Score(x,legacy).Points).ThenByDescending(x=>Number(Object(x,"stats"),"stars")).Select((e,index)=>{
+            string repo=Text(e,"repo");var score=Score(e,legacy);var record=Object(live,repo);var commit=Object(record,"commit");bool dead=IsDead(e,tracker),tracked=Text(e,"tier")=="tracked";
             string detail=Text(e,"summary","No summary")+"  ·  "+Text(e,"verification","unverified");if(dead){var note=Text(Object(e,"nuked"),"note");if(note!="")detail+="  ·  "+note;}
             var stats=Object(e,"stats");var notice=TakedownRecord(e,tracker);int liveStatus=(int)Number(record,"commit_status");bool missing=((dead||liveStatus!=200)&&Flag(stats,"missing"))||liveStatus is 404 or 451||(liveStatus==0&&Regex.IsMatch(Text(record,"error"),@"commit: [^;]*\b404\b"));
             string takedown=notice.Count>0?$"Confirmed DMCA notice · {Text(notice,"date","Date unknown")}":missing?"Not Responding, DMCA likely (unconfirmed; repository access may have changed for other reasons)":"";
             string status=notice.Count>0&&dead?"DMCA takedown":missing?"Not Responding":dead?"Dead":Text(record,"status",repo==""?"Private":"Not checked");
             string parent=string.Join(", ",Array(e,"basedOn").Select(id=>{string key=id?.ToString()??"";return Text(Array(tracker,"efforts").FirstOrDefault(item=>Text(item,"id")==key),"name",key);}).Where(x=>x!=""));
-            return new ProjectRow(r,Text(e,"name",repo),$"{score.Points:g}%",score.Stage,Stamp(Text(commit,"updated",Text(stats,"pushedAt"))),status,Text(commit,"title","—"),repo,detail,score.Points,dead,Reached30(e,legacy),ReachedComplete(e,legacy),QualityTracks(e,legacy),parent,Text(e,"evidence"),takedown,notice.Count>0&&dead,tracked);
-        }).ToList();
+            return new ProjectRow((index+1).ToString(),Text(e,"name",repo),$"{score.Points:g}%",score.Stage,Stamp(Text(commit,"updated",Text(stats,"pushedAt"))),status,Text(commit,"title","—"),repo,detail,score.Points,dead,Reached30(e,legacy),ReachedComplete(e,legacy),QualityTracks(e,legacy),parent,Text(e,"evidence"),takedown,notice.Count>0&&dead,tracked);
+        }).Where(row=>watchlist||row.Tracked).ToList();
     }
     private static ActivityRow ToActivity(JsonNode? e)=>new(Stamp(Text(e,"time")),Text(e,"project"),Text(e,"kind"),Text(e,"detail"));
     public static IReadOnlyList<ActivityRow> Activities(JsonObject state)=>Array(state,"events").Select(ToActivity).ToList();
@@ -388,7 +388,18 @@ public static class TrackerService
         var manual=JsonNode.Parse("""{"manualScore":64.3,"gta":{"loads":1,"boots":1,"menu":1,"world":1,"playable":1}}""");if(Score(manual)!=(64.3,"Playable"))throw new Exception("Manual override failed");
         var missing=JsonNode.Parse("""{"tracker":{"efforts":[{"id":"x","name":"X","tier":"tracked","repo":"owner/x","stats":{"missing":true,"missingStatus":404},"gta":{"loads":1,"world":0}},{"name":"Y","tier":"tracked","repo":"owner/y","stats":{"missing":true,"dmca":{"date":"2026-11-24"}},"gta":{"loads":1,"world":0}}]}}""")!.AsObject();
         var absent=Projects(missing).Single(x=>x.Name=="X");var taken=Projects(missing).Single(x=>x.Name=="Y");if(absent.Dead||absent.CanHide||!absent.Takedown.Contains("DMCA likely")||!taken.Dead||!taken.CanHide)throw new Exception("Takedown classification failed");
-        var rootNotice=JsonNode.Parse("""{"tracker":{"efforts":[{"id":"private","name":"Private","tier":"tracked","basedOn":["pub"],"gta":{"loads":1,"boots":1,"menu":1,"world":1,"playable":1}},{"id":"pub","name":"Public","repo":"owner/pub","tier":"tracked","stats":{"missing":true},"gta":{"loads":1,"world":0}}],"dmca":[{"date":"2026-11-24","tracked":["pub"]}]}}""")!.AsObject();var rootRows=Projects(rootNotice);if(rootRows[0].Rank!="—"||!rootRows[0].Tracked||rootRows[0].ParentBuild!="Public"||rootRows[1].Rank!="1"||!rootRows[1].CanHide)throw new Exception("Private ranking or root DMCA matching failed");
+        var rootNotice=JsonNode.Parse("""
+            {"tracker":{"efforts":[
+                {"id":"private","name":"Private","tier":"tracked","basedOn":["pub"],"gta":{"loads":1,"boots":1,"menu":1,"world":1,"playable":1}},
+                {"id":"watch","name":"Watchlist","tier":"watchlist","gta":{"loads":1,"boots":1}},
+                {"id":"pub","name":"Public","repo":"owner/pub","tier":"tracked","stats":{"missing":true},"gta":{"loads":1,"world":0}}
+            ],"dmca":[{"date":"2026-11-24","tracked":["pub"]}]}}
+            """)!.AsObject();
+        var rootRows=Projects(rootNotice);
+        if(!rootRows.Select(row=>row.Rank).SequenceEqual(new[]{"1","2","3"})||
+           !rootRows[0].Tracked||rootRows[0].ParentBuild!="Public"||!rootRows[2].CanHide||
+           !Projects(rootNotice,false).Select(row=>row.Rank).SequenceEqual(new[]{"1","3"}))
+            throw new Exception("Leaderboard ranking or root DMCA matching failed");
         if(new UserSettings(Notify30:false,NotifyStable:true).Accepts(new("","X","Milestone alert","PortWatch reports 100% complete."))!=true)throw new Exception("Completion settings routing failed");
         var e=JsonNode.Parse("{\"gta\":{\"loads\":1,\"boots\":1,\"menu\":1,\"ingame\":0.8}}");if(Score(e)!=(67,"Main menu"))throw new Exception("Score failed");
         var exe=JsonNode.Parse("{\"status\":\"released\",\"releasedAt\":\"2026-11-23T14:36:00Z\"}");if(ReleaseClock(exe,DateTimeOffset.Parse("2026-11-24T15:36:01Z")).Clock!="01d  01h  00m  01s")throw new Exception("Timer failed");
